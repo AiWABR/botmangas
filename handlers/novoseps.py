@@ -5,7 +5,8 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_IDS, AUTO_POST_LIMIT, BOT_BRAND, BOT_USERNAME, CANAL_POSTAGEM, DATA_DIR
+from config import ADMIN_IDS, AUTO_POST_LIMIT, BOT_BRAND, BOT_USERNAME, CANAL_POSTAGEM_CAPITULOS, DATA_DIR
+from core.channel_target import ensure_channel_target
 from services.catalog_client import get_recent_chapters
 
 POSTED_JSON_PATH = Path(DATA_DIR) / "capitulos_postados.json"
@@ -29,8 +30,9 @@ def _save_posted(items: list[str]) -> None:
     POSTED_JSON_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _deep_link(chapter_id: str) -> str:
-    return f"https://t.me/{BOT_USERNAME}?start=ch_{chapter_id}"
+def _deep_link(chapter_id: str, title_id: str = "") -> str:
+    payload = f"{chapter_id}_{title_id}" if title_id else chapter_id
+    return f"https://t.me/{BOT_USERNAME}?start=ch_{payload}"
 
 
 def _title_link(title_id: str) -> str:
@@ -66,7 +68,7 @@ def _caption(item: dict) -> str:
 
 
 def _keyboard(item: dict) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton("📖 Ler capitulo", url=_deep_link(item["chapter_id"]))]]
+    rows = [[InlineKeyboardButton("📖 Ler capitulo", url=_deep_link(item["chapter_id"], item.get("title_id") or ""))]]
     if item.get("title_id"):
         rows.append([InlineKeyboardButton("📚 Abrir obra", url=_title_link(item["title_id"]))])
     return InlineKeyboardMarkup(rows)
@@ -145,7 +147,7 @@ async def postnovoseps(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        destination = CANAL_POSTAGEM or message.chat_id
+        destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_CAPITULOS or message.chat_id)
         posted = _load_posted()
         sent, failed, posted = await _post_recent_items(context.bot, destination, items, posted)
         _save_posted(posted[-300:])
@@ -159,22 +161,23 @@ async def postnovoseps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as error:
         print("ERRO POSTNOVOSEPS:", repr(error))
         await status_message.edit_text(
-            "❌ <b>Nao consegui concluir as atualizacoes agora.</b>\n\nTente novamente em instantes.",
+            f"❌ <b>Nao consegui concluir as atualizacoes agora.</b>\n\n{html.escape(str(error) or 'Tente novamente em instantes.')}",
             parse_mode="HTML",
         )
 
 
 async def auto_post_new_eps_job(context: ContextTypes.DEFAULT_TYPE):
-    if not CANAL_POSTAGEM:
+    if not CANAL_POSTAGEM_CAPITULOS:
         return
 
     try:
+        destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_CAPITULOS)
         items = await get_recent_chapters(limit=AUTO_POST_LIMIT)
         if not items:
             return
 
         posted = _load_posted()
-        sent, failed, posted = await _post_recent_items(context.bot, CANAL_POSTAGEM, items, posted)
+        sent, failed, posted = await _post_recent_items(context.bot, destination, items, posted)
         if sent or failed:
             _save_posted(posted[-300:])
     except Exception as error:
