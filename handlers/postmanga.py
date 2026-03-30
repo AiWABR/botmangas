@@ -265,7 +265,7 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = manga.get("banner_url") or manga.get("cover_url") or manga.get("background_url") or None
         caption = _build_caption(manga)
         keyboard = _build_keyboard(manga)
-        destination = CANAL_POSTAGEM or message.chat_id
+        destination = "@AtualizacoesOn"
 
         if photo:
             try:
