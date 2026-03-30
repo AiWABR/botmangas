@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 
 import httpx
 
@@ -8,6 +9,7 @@ from config import CATALOG_SITE_BASE, HTTP_TIMEOUT
 
 _CLIENT: httpx.AsyncClient | None = None
 _CLIENT_LOCK = asyncio.Lock()
+_HTTP2_ENABLED = importlib.util.find_spec("h2") is not None
 
 _BASE_HEADERS = {
     "User-Agent": (
@@ -53,7 +55,7 @@ async def get_http_client() -> httpx.AsyncClient:
                 follow_redirects=True,
                 timeout=_TIMEOUT,
                 limits=_LIMITS,
-                http2=True,
+                http2=_HTTP2_ENABLED,
             )
     return _CLIENT
 
