@@ -1,0 +1,1793 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import re
+import time
+import unicodedata
+from decimal import Decimal, InvalidOperation
+from typing import Any
+from urllib.parse import urljoin
+
+import httpx
+from bs4 import BeautifulSoup
+
+try:
+    from playwright.async_api import async_playwright
+except Exception:  # pragma: no cover - optional runtime dependency
+    async_playwright = None
+
+from config import (
+    API_CACHE_TTL_SECONDS,
+    AUTO_POST_LIMIT,
+    CATALOG_SITE_BASE,
+    HOME_SECTION_LIMIT,
+    PREFERRED_CHAPTER_LANG,
+    RECENT_CHAPTER_TIME,
+    SEARCH_LIMIT,
+)
+from core.http_client import get_http_client
+from services.anilist_client import enrich_title_metadata
+from services.metrics import get_search_seed_titles
+
+BASE_URL = CATALOG_SITE_BASE.rstrip("/")
+
+_HTTP_SEMAPHORE = asyncio.Semaphore(24)
+
+_CACHE: dict[str, dict[str, Any]] = {}
+_INFLIGHT: dict[str, asyncio.Task] = {}
+_TITLE_URL_CACHE: dict[str, str] = {}
+_CHAPTER_URL_CACHE: dict[str, str] = {}
+_CSRF_TOKEN: dict[str, Any] = {"value": "", "expires_at": 0.0}
+_BROWSER_SESSION: dict[str, Any] = {"cookies": {}, "csrf_token": "", "expires_at": 0.0}
+_BROWSER_SESSION_LOCK = asyncio.Lock()
+_WARMUP_TASK: asyncio.Task | None = None
+
+PLAYWRIGHT_SESSION_TTL = 1800
+SEARCH_REMOTE_TIMEOUT = 8.0
+SEARCH_QUICK_TIMEOUT = 3.4
+SEARCH_RICH_TIMEOUT = 4.6
+SEARCH_MIN_REMOTE_RESULTS = 3
+LOCAL_SEARCH_SEED_TTL = 300
+FORM_QUICK_TIMEOUT = httpx.Timeout(5.5, connect=4.0, read=5.5, write=5.5, pool=5.5)
+
+SEARCH_TTL = min(max(API_CACHE_TTL_SECONDS, 180), 1800)
+HOME_TTL = min(max(API_CACHE_TTL_SECONDS, 300), 1800)
+TITLE_TTL = max(API_CACHE_TTL_SECONDS, 1800)
+CHAPTERS_TTL = max(API_CACHE_TTL_SECONDS, 900)
+CHAPTER_TTL = max(API_CACHE_TTL_SECONDS, 1800)
+BUNDLE_TTL = max(API_CACHE_TTL_SECONDS, 1800)
+READER_TTL = max(API_CACHE_TTL_SECONDS, 900)
+
+KNOWN_STATUSES = {
+    "ongoing",
+    "completed",
+    "hiatus",
+    "cancelled",
+    "dropped",
+    "on going",
+    "on-going",
+}
+
+STOP_DESCRIPTION_LABELS = {
+    "keywords",
+    "filters",
+    "choose chapter",
+    "comments",
+    "related titles",
+    "you may also like",
+    "recommended",
+}
+
+TITLE_VARIANT_LABELS: list[tuple[str, str]] = [
+    ("official colored", "Colorido"),
+    ("digital colored comics", "Colorido"),
+    ("full color", "Colorido"),
+    ("full coloured", "Colorido"),
+    ("colored", "Colorido"),
+    ("coloured", "Colorido"),
+    ("colorido", "Colorido"),
+    ("colorida", "Colorido"),
+    ("remake", "Remake"),
+    ("redux", "Redux"),
+    ("special", "Especial"),
+    ("spin off", "Spin-off"),
+    ("spin-off", "Spin-off"),
+    ("one shot", "One-shot"),
+    ("one-shot", "One-shot"),
+    ("oneshot", "One-shot"),
+    ("webtoon", "Webtoon"),
+    ("manhwa", "Manhwa"),
+    ("manhua", "Manhua"),
+    ("novel", "Novel"),
+]
+
+
+def clear_catalog_cache() -> None:
+    _CACHE.clear()
+    _INFLIGHT.clear()
+    _TITLE_URL_CACHE.clear()
+    _CHAPTER_URL_CACHE.clear()
+    _CSRF_TOKEN["value"] = ""
+    _CSRF_TOKEN["expires_at"] = 0.0
+    _BROWSER_SESSION["cookies"] = {}
+    _BROWSER_SESSION["csrf_token"] = ""
+    _BROWSER_SESSION["expires_at"] = 0.0
+
+
+def _cache_get(key: str, ttl: int):
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    if time.time() - item["time"] > ttl:
+        _CACHE.pop(key, None)
+        return None
+    return item["data"]
+
+
+def _cache_set(key: str, data: Any) -> Any:
+    _CACHE[key] = {"time": time.time(), "data": data}
+    return data
+
+
+def get_cached_data(key: str, ttl: int) -> Any | None:
+    return _cache_get(key, ttl)
+
+
+async def _dedup_fetch(key: str, ttl: int, coro_factory):
+    cached = _cache_get(key, ttl)
+    if cached is not None:
+        return cached
+
+    task = _INFLIGHT.get(key)
+    if task:
+        return await task
+
+    async def _runner():
+        return await coro_factory()
+
+    task = asyncio.create_task(_runner())
+    _INFLIGHT[key] = task
+
+    try:
+        data = await task
+        return _cache_set(key, data)
+    finally:
+        _INFLIGHT.pop(key, None)
+
+
+def _clean(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _strip_html(value: Any) -> str:
+    return BeautifulSoup(str(value or ""), "html.parser").get_text(" ", strip=True)
+
+
+def _absolute_url(value: Any) -> str:
+    text = _clean(value)
+    if not text:
+        return ""
+    return urljoin(f"{BASE_URL}/", text)
+
+
+def _normalize_text(value: str) -> str:
+    value = unicodedata.normalize("NFKD", _clean(value).lower())
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"[^a-z0-9\s-]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _clean_catalog_title(value: Any) -> str:
+    title = _clean(value)
+    if not title:
+        return ""
+
+    match = re.match(r"^(?P<main>.+?)\s+\((?P<rest>.+)\)$", title)
+    if match:
+        rest = match.group("rest")
+        if len(rest) > 18 and ("/" in rest or "," in rest):
+            title = match.group("main").strip()
+
+    return title.strip(" -|")
+
+
+def _slug_title_variant_hint(url: str) -> str:
+    text = _clean(url)
+    if not text:
+        return ""
+
+    match = re.search(r"/title-detail/([^/]+)-[a-f0-9]{20,32}", text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+
+    slug_text = _normalize_text(match.group(1).replace("-", " "))
+    for needle, label in TITLE_VARIANT_LABELS:
+        if needle in slug_text:
+            return label
+    return ""
+
+
+def _title_variant_hint(raw_title: Any, url: str = "") -> str:
+    title = _clean(raw_title)
+    hints: list[str] = []
+
+    match = re.match(r"^(?P<main>.+?)\s+\((?P<rest>.+)\)$", title)
+    if match:
+        rest = match.group("rest")
+        for part in re.split(r"[/,;|]+", rest):
+            normalized_part = _normalize_text(part)
+            for needle, label in TITLE_VARIANT_LABELS:
+                if needle in normalized_part and label not in hints:
+                    hints.append(label)
+                    break
+
+    slug_hint = _slug_title_variant_hint(url)
+    if slug_hint and slug_hint not in hints:
+        hints.append(slug_hint)
+
+    if not hints:
+        return ""
+    return " / ".join(hints[:2])
+
+
+def _display_catalog_title(raw_title: Any, url: str = "") -> str:
+    base_title = _clean_catalog_title(raw_title)
+    if not base_title:
+        return ""
+
+    hint = _title_variant_hint(raw_title, url)
+    if not hint:
+        return base_title
+
+    if _normalize_text(hint) in _normalize_text(base_title):
+        return base_title
+    return f"{base_title} [{hint}]"
+
+
+def _search_score(query: str, title: str) -> tuple[int, int]:
+    normalized_query = _normalize_text(query)
+    normalized_title = _normalize_text(title)
+    if not normalized_query or not normalized_title:
+        return (0, 0)
+    if normalized_title == normalized_query:
+        return (500, -len(normalized_title))
+    if normalized_title.startswith(normalized_query):
+        return (400, -len(normalized_title))
+    if f" {normalized_query}" in normalized_title or normalized_title.endswith(normalized_query):
+        return (300, -len(normalized_title))
+    if normalized_query in normalized_title:
+        return (200, -len(normalized_title))
+    query_words = normalized_query.split()
+    title_words = normalized_title.split()
+    overlap = len(set(query_words) & set(title_words))
+    return (100 + overlap, -len(normalized_title))
+
+
+def _iter_cached_search_candidates() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    for key, payload in list(_CACHE.items()):
+        if not (key.startswith("title-search:") or key.startswith("smart-search:")):
+            continue
+        data = payload.get("data")
+        if not isinstance(data, list):
+            continue
+        for item in data:
+            if isinstance(item, dict):
+                items.append(item)
+
+    return items
+
+
+def _iter_local_search_seed_candidates(limit: int = 300) -> list[dict[str, Any]]:
+    cache_key = f"local-search-seeds:{max(1, int(limit))}"
+    cached = _cache_get(cache_key, LOCAL_SEARCH_SEED_TTL)
+    if isinstance(cached, list):
+        return list(cached)
+
+    try:
+        items = list(get_search_seed_titles(limit=max(50, int(limit))))
+    except Exception:
+        items = []
+
+    _cache_set(cache_key, items)
+    return items
+
+
+def _fallback_search_titles(query: str, limit: int) -> list[dict[str, Any]]:
+    normalized_query = _normalize_text(query)
+    if not normalized_query:
+        return []
+
+    seen: set[str] = set()
+    scored: list[tuple[tuple[int, int], dict[str, Any]]] = []
+
+    fallback_candidates = _iter_cached_search_candidates()
+    fallback_candidates.extend(_iter_local_search_seed_candidates(limit=max(120, int(limit) * 12)))
+
+    for item in fallback_candidates:
+        raw_title = item.get("display_title") or item.get("title") or item.get("name") or item.get("title_name")
+        title = _clean_catalog_title(raw_title)
+        title_id = _extract_title_id(item.get("title_id") or item.get("_id") or item.get("id") or item.get("url"))
+        if not title or not title_id:
+            continue
+
+        score = _search_score(query, title)
+        if score[0] < 200:
+            continue
+
+        if title_id in seen:
+            continue
+        seen.add(title_id)
+
+        normalized_item = dict(item)
+        normalized_item["title"] = title
+        normalized_item["title_id"] = title_id
+        normalized_item["display_title"] = _display_catalog_title(
+            item.get("raw_title") or raw_title,
+            item.get("url") or "",
+        ) or title
+        scored.append((score, normalized_item))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[: max(1, int(limit))]]
+
+
+def _normalize_search_response_items(results: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    normalized = [
+        item
+        for item in (_normalize_catalog_item(raw_item) for raw_item in results if isinstance(raw_item, dict))
+        if item.get("title_id")
+    ]
+    normalized.sort(key=lambda item: _search_score(query, item.get("title") or ""), reverse=True)
+    return normalized
+
+
+def _merge_search_result_sets(*result_sets: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for result_set in result_sets:
+        for item in result_set or []:
+            title_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+            if not title_id or title_id in seen:
+                continue
+            seen.add(title_id)
+            merged.append(item)
+            if len(merged) >= max(1, int(limit)):
+                return merged
+
+    return merged
+
+
+def _extract_title_id(value: Any) -> str:
+    text = _clean(value)
+    match = re.search(r"title-detail/(?:[^/]*-)?([a-f0-9]{20,32})", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\b([a-f0-9]{20,32})\b", text, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _extract_chapter_id(value: Any) -> str:
+    text = _clean(value)
+    match = re.search(r"chapter-detail/([a-f0-9]{20,32})", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"\b([a-f0-9]{20,32})\b", text, flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _clean_og_title(raw: str) -> str:
+    text = _clean(raw)
+    text = re.sub(r"\s+-\s+Manga Ball$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+Online Gr[aá]tis.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+Online Free.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+V[aá]rios Idiomas.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+Multiple Languages.*$", "", text, flags=re.IGNORECASE)
+    return text.strip(" -|")
+
+
+def _clean_chapter_title(raw: str) -> tuple[str, str]:
+    text = _clean_og_title(raw)
+    chapter_number = ""
+
+    match = re.search(r"\bCh\.\s*([0-9]+(?:\.[0-9]+)?)", text, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"\bCap[ií]tulo\s*([0-9]+(?:\.[0-9]+)?)", text, flags=re.IGNORECASE)
+    if match:
+        chapter_number = match.group(1)
+
+    title = re.sub(r"\bCh\.\s*[0-9]+(?:\.[0-9]+)?\b.*$", "", text, flags=re.IGNORECASE)
+    title = re.sub(r"\bCap[ií]tulo\s*[0-9]+(?:\.[0-9]+)?\b.*$", "", title, flags=re.IGNORECASE)
+    return title.strip(" -|"), chapter_number
+
+
+def _decimal_sort_value(value: Any) -> Decimal:
+    text = _clean(value)
+    if not text:
+        return Decimal("0")
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        pass
+
+    cleaned = re.sub(r"[^0-9.]", "", text)
+    try:
+        return Decimal(cleaned or "0")
+    except InvalidOperation:
+        return Decimal("0")
+
+
+def _remember_title_url(title_id: str, url: str) -> None:
+    title_id = _clean(title_id)
+    url = _absolute_url(url)
+    if title_id and url:
+        _TITLE_URL_CACHE[title_id] = url
+
+
+def _remember_chapter_url(chapter_id: str, url: str) -> None:
+    chapter_id = _clean(chapter_id)
+    url = _absolute_url(url)
+    if chapter_id and url:
+        _CHAPTER_URL_CACHE[chapter_id] = url
+
+
+def _extract_meta_content(soup: BeautifulSoup, prop: str) -> str:
+    node = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+    if not node:
+        return ""
+    return _clean(node.get("content"))
+
+
+def _browser_session_is_valid() -> bool:
+    return (
+        bool(_BROWSER_SESSION.get("cookies"))
+        and bool(_clean(_BROWSER_SESSION.get("csrf_token")))
+        and time.time() < float(_BROWSER_SESSION.get("expires_at") or 0.0)
+    )
+
+
+def _browser_session_snapshot() -> dict[str, Any] | None:
+    if not _browser_session_is_valid():
+        return None
+    return {
+        "cookies": dict(_BROWSER_SESSION["cookies"]),
+        "csrf_token": _BROWSER_SESSION["csrf_token"],
+        "expires_at": _BROWSER_SESSION["expires_at"],
+    }
+
+
+async def _ensure_browser_session(force_refresh: bool = False) -> dict[str, Any]:
+    if not force_refresh and _browser_session_is_valid():
+        return {
+            "cookies": dict(_BROWSER_SESSION["cookies"]),
+            "csrf_token": _BROWSER_SESSION["csrf_token"],
+            "expires_at": _BROWSER_SESSION["expires_at"],
+        }
+
+    if async_playwright is None:
+        raise RuntimeError(
+            "Playwright nao esta instalado. Instale 'playwright' e rode "
+            "'python -m playwright install chromium'."
+        )
+
+    async with _BROWSER_SESSION_LOCK:
+        if not force_refresh and _browser_session_is_valid():
+            return {
+                "cookies": dict(_BROWSER_SESSION["cookies"]),
+                "csrf_token": _BROWSER_SESSION["csrf_token"],
+                "expires_at": _BROWSER_SESSION["expires_at"],
+            }
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = None
+            try:
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    locale="pt-BR",
+                )
+                page = await context.new_page()
+                await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
+
+                csrf_token = _clean(await page.locator("meta[name='csrf-token']").get_attribute("content"))
+                cookies = {
+                    _clean(item.get("name")): _clean(item.get("value"))
+                    for item in (await context.cookies())
+                    if _clean(item.get("name")) and _clean(item.get("value"))
+                }
+            finally:
+                if context is not None:
+                    with contextlib.suppress(Exception):
+                        await context.close()
+                with contextlib.suppress(Exception):
+                    await browser.close()
+
+        if not csrf_token or not cookies:
+            raise RuntimeError("Nao foi possivel obter a sessao protegida da fonte.")
+
+        _BROWSER_SESSION["cookies"] = cookies
+        _BROWSER_SESSION["csrf_token"] = csrf_token
+        _BROWSER_SESSION["expires_at"] = time.time() + PLAYWRIGHT_SESSION_TTL
+
+        return {
+            "cookies": dict(cookies),
+            "csrf_token": csrf_token,
+            "expires_at": _BROWSER_SESSION["expires_at"],
+        }
+
+
+def _build_ajax_referer(path: str, data: dict[str, Any]) -> str:
+    normalized_path = _clean(path).lower()
+    title_id = _extract_title_id(data.get("title_id"))
+    if "chapter-listing-by-title-id" in normalized_path and title_id:
+        return _TITLE_URL_CACHE.get(title_id) or _absolute_url(f"/title-detail/{title_id}/")
+    return f"{BASE_URL}/"
+
+
+async def _build_ajax_headers(
+    session: dict[str, Any] | None = None,
+    referer: str | None = None,
+    *,
+    allow_browser_token: bool = True,
+) -> dict[str, str]:
+    csrf_token = _clean((session or {}).get("csrf_token"))
+    if not csrf_token:
+        csrf_token = await get_csrf_token(allow_browser=allow_browser_token)
+
+    referer = _absolute_url(referer) or f"{BASE_URL}/"
+    return {
+        "Accept": "application/json,text/plain,*/*",
+        "X-CSRF-TOKEN": csrf_token,
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": referer,
+        "Origin": BASE_URL,
+    }
+
+
+async def _request_form_json_via_playwright(path: str, data: dict[str, Any], referer: str) -> dict[str, Any]:
+    if async_playwright is None:
+        raise RuntimeError(
+            "Playwright nao esta instalado. Instale 'playwright' e rode "
+            "'python -m playwright install chromium'."
+        )
+
+    url = _absolute_url(path)
+    referer = _absolute_url(referer) or f"{BASE_URL}/"
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = None
+        try:
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                locale="pt-BR",
+            )
+            page = await context.new_page()
+            await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
+            headers = await _build_ajax_headers(
+                {
+                    "csrf_token": _clean(await page.locator("meta[name='csrf-token']").get_attribute("content")),
+                },
+                referer,
+            )
+            response = await context.request.post(url, form=data, headers=headers)
+            response_text = await response.text()
+        finally:
+            if context is not None:
+                with contextlib.suppress(Exception):
+                    await context.close()
+            with contextlib.suppress(Exception):
+                await browser.close()
+
+    if response.status != 200:
+        raise RuntimeError(f"Playwright recebeu HTTP {response.status} ao consultar {url}.")
+
+    try:
+        return json.loads(response_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Resposta invalida da fonte em {url}: {response_text[:240]!r}") from error
+
+
+def _extract_text_lines(soup: BeautifulSoup) -> list[str]:
+    lines: list[str] = []
+    for raw in soup.get_text("\n").splitlines():
+        text = _clean(raw)
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _find_title_anchor_index(lines: list[str], title: str) -> int:
+    normalized_title = _normalize_text(title)
+    if not normalized_title:
+        return 0
+
+    for index, line in enumerate(lines):
+        normalized_line = _normalize_text(line)
+        if not normalized_line:
+            continue
+        if normalized_line == normalized_title:
+            return index
+        if normalized_title in normalized_line and "online free" not in normalized_line:
+            return index
+    return 0
+
+
+def _parse_list_line(line: str, separator: str = ",") -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    for part in [item.strip() for item in line.split(separator)]:
+        if not part:
+            continue
+        key = part.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(part)
+    return values
+
+
+def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, Any]:
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    og_title = _extract_meta_content(soup, "og:title")
+    og_image = _extract_meta_content(soup, "og:image")
+    og_url = _extract_meta_content(soup, "og:url")
+    title_id_match = re.search(r"const titleId = ['`]([a-f0-9]{20,32})['`]", html_text, flags=re.IGNORECASE)
+    title_id = title_id_match.group(1) if title_id_match else _extract_title_id(og_url or requested_url)
+
+    title = _clean_og_title(og_title)
+    lines = _extract_text_lines(soup)
+    anchor_index = _find_title_anchor_index(lines, title)
+    title_window = lines[anchor_index: anchor_index + 80] if lines else []
+
+    genres: list[str] = []
+    authors: list[str] = []
+    alt_titles: list[str] = []
+    description = ""
+    published = ""
+    status = ""
+    rating = ""
+    followers = ""
+    views = ""
+    comments = ""
+
+    primary_genres: list[str] = []
+    for line in title_window[:12]:
+        if "," not in line:
+            continue
+        normalized = line.lower()
+        if "published:" in normalized or "/" in line:
+            continue
+        maybe_genres = [item for item in _parse_list_line(line) if len(item) <= 24]
+        if len(maybe_genres) >= 2:
+            primary_genres = maybe_genres
+            break
+
+    for line in title_window:
+        normalized = line.lower()
+        if normalized.startswith("published:"):
+            published = _clean(line.split(":", 1)[1])
+            continue
+        if normalized in KNOWN_STATUSES:
+            status = line
+            continue
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", line):
+            if not rating:
+                rating = line
+            elif not followers:
+                followers = line
+            elif not views:
+                views = line
+            elif not comments:
+                comments = line
+
+    keywords_index = next((index for index, line in enumerate(lines) if line.lower() == "keywords"), -1)
+    if not primary_genres and keywords_index >= 0:
+        for line in lines[keywords_index + 1: keywords_index + 10]:
+            normalized = line.lower()
+            if normalized in STOP_DESCRIPTION_LABELS:
+                break
+            if "keywords" in normalized or re.search(r"\d", line):
+                continue
+            if len(line) > 24 and "," not in line:
+                break
+            genres.extend(_parse_list_line(line))
+
+    if primary_genres:
+        genres = primary_genres
+
+    raw_alt_titles: list[str] = []
+    alt_labels = {"alternative", "alternative titles", "alt title", "alt titles", "associated names", "other name", "other names"}
+    for index, line in enumerate(lines):
+        normalized = line.lower()
+        if normalized not in alt_labels:
+            continue
+        for candidate in lines[index + 1:index + 8]:
+            candidate_norm = candidate.lower()
+            if (
+                not candidate
+                or candidate == title
+                or candidate in genres
+                or ":" in candidate
+                or candidate_norm in KNOWN_STATUSES
+                or candidate_norm in STOP_DESCRIPTION_LABELS
+                or candidate_norm == "published"
+                or candidate_norm.startswith("published:")
+            ):
+                break
+            raw_alt_titles.extend(_parse_list_line(candidate, separator="/"))
+            if "," in candidate:
+                raw_alt_titles.extend(_parse_list_line(candidate, separator=","))
+        break
+
+    alt_titles_seen: set[str] = set()
+    for candidate in raw_alt_titles:
+        cleaned = _clean(candidate)
+        if not cleaned:
+            continue
+        key = _normalize_text(cleaned)
+        if not key or key == _normalize_text(title) or key in alt_titles_seen:
+            continue
+        alt_titles_seen.add(key)
+        alt_titles.append(cleaned)
+
+    published_index = next((index for index, line in enumerate(title_window) if line.lower().startswith("published:")), -1)
+    if published_index > 0:
+        for line in reversed(title_window[:published_index]):
+            if line == title or line in alt_titles or line in genres:
+                continue
+            if len(line) > 60 or ":" in line or line.lower() in KNOWN_STATUSES:
+                continue
+            authors = [line]
+            break
+
+    description_index = next((index for index, line in enumerate(lines) if line.lower() == "description"), -1)
+    if description_index >= 0:
+        description_lines: list[str] = []
+        for line in lines[description_index + 1:]:
+            normalized = line.lower()
+            if normalized in STOP_DESCRIPTION_LABELS:
+                break
+            if line == "Expand":
+                continue
+            description_lines.append(line)
+        description = _clean(" ".join(description_lines))
+
+    result = {
+        "title_id": title_id,
+        "url": _absolute_url(og_url or requested_url),
+        "title": title,
+        "alt_titles": alt_titles,
+        "description": description,
+        "cover_url": _absolute_url(og_image),
+        "background_url": _absolute_url(og_image),
+        "status": status,
+        "rating": rating,
+        "followers": followers,
+        "views": views,
+        "comments": comments,
+        "genres": genres,
+        "authors": authors,
+        "published": published,
+    }
+
+    _remember_title_url(title_id, result["url"])
+    return result
+
+
+def _parse_chapter_detail_html(html_text: str, requested_url: str) -> dict[str, Any]:
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    og_title = _extract_meta_content(soup, "og:title")
+    og_image = _extract_meta_content(soup, "og:image")
+    og_url = _extract_meta_content(soup, "og:url")
+    manga_title, og_chapter_number = _clean_chapter_title(og_title)
+
+    title_id_match = re.search(r"const titleId = ['`]([a-f0-9]{20,32})['`]", html_text, flags=re.IGNORECASE)
+    if not title_id_match:
+        title_id_match = re.search(r'"titleId"\s*:\s*"([a-f0-9]{20,32})"', html_text, flags=re.IGNORECASE)
+    if not title_id_match:
+        title_id_match = re.search(r'"title_id"\s*:\s*"([a-f0-9]{20,32})"', html_text, flags=re.IGNORECASE)
+    chapter_id_match = re.search(r"const chapterId = ['`]([a-f0-9]{20,32})['`]", html_text, flags=re.IGNORECASE)
+    chapter_number_match = re.search(r"const chapterNumber = ['`]([^'`]+)['`]", html_text, flags=re.IGNORECASE)
+    chapter_volume_match = re.search(r"const chapterVolume = ['`]([^'`]+)['`]", html_text, flags=re.IGNORECASE)
+    chapter_language_match = re.search(r"const chapterLanguage = ['`]([^'`]+)['`]", html_text, flags=re.IGNORECASE)
+    images_match = re.search(
+        r"const chapterImages = JSON\.parse\(`(?P<data>\[.*?\])`\);",
+        html_text,
+        flags=re.DOTALL,
+    )
+
+    title_id = title_id_match.group(1) if title_id_match else ""
+    chapter_id = chapter_id_match.group(1) if chapter_id_match else _extract_chapter_id(og_url or requested_url)
+    chapter_number = _clean(chapter_number_match.group(1)) if chapter_number_match else og_chapter_number
+    chapter_volume = _clean(chapter_volume_match.group(1)) if chapter_volume_match else ""
+    chapter_language = _clean(chapter_language_match.group(1)).lower() if chapter_language_match else PREFERRED_CHAPTER_LANG
+
+    chapter_images: list[str] = []
+    if images_match:
+        try:
+            raw_images = json.loads(images_match.group("data"))
+            chapter_images = [_absolute_url(item) for item in raw_images if _clean(item)]
+        except Exception:
+            chapter_images = []
+
+    title_detail_match = re.search(r"https?://[^\"'`\s]+/title-detail/[^\"'`\s]+", html_text)
+    title_detail_url = _absolute_url(title_detail_match.group(0)) if title_detail_match else ""
+    if not title_detail_url:
+        anchor = soup.select_one("a[href*='/title-detail/']")
+        if anchor:
+            title_detail_url = _absolute_url(anchor.get("href"))
+    if not title_detail_url:
+        canonical = soup.find("link", attrs={"rel": "canonical"})
+        canonical_href = _clean(canonical.get("href") if canonical else "")
+        if "/title-detail/" in canonical_href:
+            title_detail_url = _absolute_url(canonical_href)
+
+    result = {
+        "title_id": title_id or _extract_title_id(title_detail_url),
+        "title": manga_title,
+        "title_url": title_detail_url,
+        "chapter_id": chapter_id,
+        "chapter_number": chapter_number,
+        "chapter_volume": chapter_volume,
+        "chapter_language": chapter_language,
+        "chapter_url": _absolute_url(og_url or requested_url),
+        "cover_url": _absolute_url(og_image),
+        "images": chapter_images,
+        "image_count": len(chapter_images),
+    }
+
+    _remember_chapter_url(chapter_id, result["chapter_url"])
+    if result["title_id"] and title_detail_url:
+        _remember_title_url(result["title_id"], title_detail_url)
+
+    return result
+
+
+def _normalize_catalog_item(item: dict[str, Any]) -> dict[str, Any]:
+    url = _absolute_url(item.get("url") or item.get("href") or item.get("link"))
+    chapter_url = _absolute_url(
+        item.get("chapter_url")
+        or item.get("latest_chapter_url")
+        or item.get("read_url")
+        or item.get("latest_url")
+    )
+
+    if url and "/chapter-detail/" in url and not chapter_url:
+        chapter_url = url
+
+    title_id = (
+        _clean(item.get("title_id"))
+        or _clean(item.get("_id"))
+        or _clean(item.get("id"))
+        or _extract_title_id(url)
+        or _extract_title_id(chapter_url)
+    )
+    chapter_id = _clean(item.get("chapter_id")) or _extract_chapter_id(chapter_url or url)
+    raw_title = item.get("name") or item.get("title") or item.get("title_name")
+    clean_title = _clean_catalog_title(raw_title)
+    display_title = _display_catalog_title(raw_title, url)
+
+    normalized = {
+        "title_id": title_id,
+        "chapter_id": chapter_id,
+        "url": url,
+        "chapter_url": chapter_url,
+        "title": clean_title,
+        "display_title": display_title or clean_title,
+        "raw_title": _clean(raw_title),
+        "cover_url": _absolute_url(item.get("cover") or item.get("img") or item.get("image") or item.get("thumbnail")),
+        "background_url": _absolute_url(item.get("background") or item.get("cover") or item.get("img")),
+        "status": _strip_html(item.get("status") or item.get("status_label") or item.get("statusText")),
+        "rating": _clean(item.get("rating") or item.get("score")),
+        "followers": _clean(item.get("followers") or item.get("bookmark")),
+        "views": _clean(item.get("views")),
+        "updated_at": _clean(item.get("updated_at") or item.get("updatedAt") or item.get("latest")),
+        "language": _clean(item.get("language") or item.get("lang") or item.get("language_code")).lower(),
+        "language_flag": _absolute_url(item.get("languageFlag") or item.get("flag")),
+        "latest_chapter": _clean(
+            item.get("chapter")
+            or item.get("latest_chapter")
+            or item.get("updated_chapter")
+            or item.get("chapter_number")
+        ),
+        "adult": bool(item.get("isAdult") or item.get("adult") or item.get("is_adult")),
+    }
+
+    _remember_title_url(title_id, url)
+    if chapter_id and chapter_url:
+        _remember_chapter_url(chapter_id, chapter_url)
+    return normalized
+
+
+def _normalize_translation(raw: dict[str, Any], group: dict[str, Any]) -> dict[str, Any]:
+    url = _absolute_url(raw.get("url"))
+    translation = {
+        "id": _clean(raw.get("id")) or _extract_chapter_id(url),
+        "url": url,
+        "language": _clean(raw.get("language") or raw.get("lang")).lower(),
+        "volume": _clean(raw.get("volume") or group.get("volume")),
+        "name": _clean(raw.get("name") or raw.get("chapter_name") or group.get("name")),
+        "group_name": _clean((raw.get("group") or {}).get("name") if isinstance(raw.get("group"), dict) else raw.get("group")),
+        "date": _clean(raw.get("date") or raw.get("updated_at")),
+        "views": _clean(raw.get("views")),
+        "likes": _clean(raw.get("likes")),
+        "comments": _clean(raw.get("comments")),
+    }
+    _remember_chapter_url(translation["id"], url)
+    return translation
+
+
+def _pick_translation(translations: list[dict[str, Any]], preferred_lang: str) -> dict[str, Any] | None:
+    if not translations:
+        return None
+
+    preferred_lang = _clean(preferred_lang).lower()
+    if preferred_lang:
+        for translation in translations:
+            if translation["language"] == preferred_lang:
+                return translation
+
+    for fallback_lang in (PREFERRED_CHAPTER_LANG, "pt-br", "en"):
+        for translation in translations:
+            if translation["language"] == fallback_lang:
+                return translation
+
+    return translations[0]
+
+
+def _normalize_chapter_groups(raw_groups: list[dict[str, Any]], preferred_lang: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    for raw_group in raw_groups or []:
+        chapter_number = _clean(raw_group.get("number") or raw_group.get("chapter"))
+        chapter_number_float = _decimal_sort_value(raw_group.get("number_float") or chapter_number or raw_group.get("number"))
+        translations = [
+            _normalize_translation(raw_translation, raw_group)
+            for raw_translation in (raw_group.get("translations") or [])
+        ]
+        preferred = _pick_translation(translations, preferred_lang)
+
+        normalized.append(
+            {
+                "chapter_number": chapter_number,
+                "chapter_number_float": str(chapter_number_float),
+                "sort_value": chapter_number_float,
+                "translations": translations,
+                "preferred_translation": preferred,
+            }
+        )
+
+    normalized.sort(key=lambda item: item["sort_value"], reverse=True)
+    return normalized
+
+
+async def _request_text(url: str, *, headers: dict[str, str] | None = None) -> str:
+    client = await get_http_client()
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            async with _HTTP_SEMAPHORE:
+                response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            return response.text
+        except (httpx.HTTPError, httpx.TimeoutException) as error:
+            last_error = error
+            await asyncio.sleep(0.35 * (attempt + 1))
+
+    raise RuntimeError(f"Falha ao buscar {url}: {last_error!r}")
+
+
+async def _request_text_fast(url: str, *, headers: dict[str, str] | None = None) -> str:
+    client = await get_http_client()
+
+    async with _HTTP_SEMAPHORE:
+        response = await client.get(url, headers=headers, timeout=FORM_QUICK_TIMEOUT)
+
+    response.raise_for_status()
+    return response.text
+
+
+async def _try_request_text(url: str) -> str:
+    try:
+        return await _request_text(url)
+    except Exception:
+        return ""
+
+
+async def _request_form_json(path: str, data: dict[str, Any]) -> dict[str, Any]:
+    client = await get_http_client()
+    url = _absolute_url(path)
+    referer = _build_ajax_referer(path, data)
+
+    last_error: Exception | None = None
+    browser_error: Exception | None = None
+
+    browser_session = _browser_session_snapshot()
+    headers = await _build_ajax_headers(
+        browser_session,
+        referer,
+        allow_browser_token=bool(browser_session),
+    )
+    cookies = dict((browser_session or {}).get("cookies") or {})
+
+    for attempt in range(3):
+        try:
+            async with _HTTP_SEMAPHORE:
+                response = await client.post(
+                    url,
+                    data=data,
+                    headers=headers,
+                    cookies=cookies or None,
+                )
+            if response.status_code in (401, 403):
+                last_error = httpx.HTTPStatusError(
+                    f"HTTP {response.status_code}",
+                    request=response.request,
+                    response=response,
+                )
+                try:
+                    browser_session = await _ensure_browser_session(force_refresh=True)
+                    headers = await _build_ajax_headers(browser_session, referer)
+                    cookies = dict(browser_session.get("cookies") or {})
+                except Exception as error:
+                    browser_error = error
+                await asyncio.sleep(0.35 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, httpx.TimeoutException, ValueError) as error:
+            last_error = error
+            if isinstance(error, httpx.HTTPStatusError) and error.response is not None:
+                if error.response.status_code in (401, 403):
+                    try:
+                        browser_session = await _ensure_browser_session(force_refresh=True)
+                        headers = await _build_ajax_headers(browser_session, referer)
+                        cookies = dict(browser_session.get("cookies") or {})
+                    except Exception as browser_refresh_error:
+                        browser_error = browser_refresh_error
+            await asyncio.sleep(0.35 * (attempt + 1))
+
+    if isinstance(last_error, httpx.HTTPStatusError) and last_error.response is not None:
+        if last_error.response.status_code in (401, 403):
+            try:
+                return await _request_form_json_via_playwright(path, data, referer)
+            except Exception as error:
+                browser_error = error
+
+    if browser_error and (
+        not isinstance(last_error, httpx.HTTPStatusError)
+        or (last_error.response is not None and last_error.response.status_code in (401, 403))
+    ):
+        raise RuntimeError(
+            f"Falha ao consultar {url}: a fonte exigiu sessao de navegador "
+            f"e o fallback nao ficou disponivel ({browser_error!r})."
+        )
+
+    raise RuntimeError(f"Falha ao consultar {url}: {last_error!r}")
+
+
+async def _request_form_json_quick(path: str, data: dict[str, Any]) -> dict[str, Any]:
+    client = await get_http_client()
+    url = _absolute_url(path)
+    referer = _build_ajax_referer(path, data)
+    headers = await _build_ajax_headers(None, referer, allow_browser_token=False)
+    last_error: Exception | None = None
+
+    for attempt in range(2):
+        try:
+            async with _HTTP_SEMAPHORE:
+                response = await client.post(
+                    url,
+                    data=data,
+                    headers=headers,
+                    timeout=FORM_QUICK_TIMEOUT,
+                )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, httpx.TimeoutException, ValueError) as error:
+            last_error = error
+            if attempt == 0:
+                await asyncio.sleep(0.18)
+
+    raise RuntimeError(f"Falha ao consultar {url}: {last_error!r}")
+
+
+async def get_csrf_token(force_refresh: bool = False, *, allow_browser: bool = True) -> str:
+    if not force_refresh and _CSRF_TOKEN["value"] and time.time() < _CSRF_TOKEN["expires_at"]:
+        return _CSRF_TOKEN["value"]
+
+    if allow_browser:
+        try:
+            browser_session = await _ensure_browser_session(force_refresh=force_refresh)
+            token = _clean(browser_session.get("csrf_token"))
+            if token:
+                _CSRF_TOKEN["value"] = token
+                _CSRF_TOKEN["expires_at"] = time.time() + 1800
+                return token
+        except Exception:
+            pass
+
+    html_text = await (_request_text(BASE_URL) if allow_browser else _request_text_fast(BASE_URL))
+    soup = BeautifulSoup(html_text, "html.parser")
+    meta = soup.find("meta", attrs={"name": "csrf-token"})
+    token = _clean(meta.get("content") if meta else "")
+    if not token:
+        raise RuntimeError("Nao foi possivel obter o token CSRF da fonte.")
+
+    _CSRF_TOKEN["value"] = token
+    _CSRF_TOKEN["expires_at"] = time.time() + 1800
+    return token
+
+
+async def get_title_search(search_type: str, limit: int = HOME_SECTION_LIMIT, **extra) -> list[dict[str, Any]]:
+    cache_key = f"title-search:{search_type}:{limit}:{json.dumps(extra, sort_keys=True)}"
+
+    async def _load():
+        payload: dict[str, Any] = {
+            "search_type": search_type,
+            "search_limit": max(1, int(limit)),
+        }
+        payload.update({key: value for key, value in extra.items() if value not in (None, "")})
+
+        response = await _request_form_json("/api/v1/title/search/", payload)
+        if response.get("code") != 200:
+            return []
+
+        data = response.get("data") or []
+        return [
+            normalized
+            for normalized in (_normalize_catalog_item(item) for item in data if isinstance(item, dict))
+            if normalized.get("title_id") or normalized.get("chapter_id")
+        ]
+
+    return await _dedup_fetch(cache_key, HOME_TTL, _load)
+
+
+def get_cached_title_search(search_type: str, limit: int = HOME_SECTION_LIMIT, **extra) -> list[dict[str, Any]]:
+    cache_key = f"title-search:{search_type}:{limit}:{json.dumps(extra, sort_keys=True)}"
+    cached = _cache_get(cache_key, HOME_TTL)
+    return list(cached or [])
+
+
+async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]]:
+    normalized_query = _clean(query)
+    if not normalized_query:
+        return []
+
+    cache_key = f"smart-search:{normalized_query.lower()}:{limit}"
+
+    async def _load():
+        fallback_results = _fallback_search_titles(normalized_query, limit)
+        payload = {"search_input": normalized_query}
+        quick_results: list[dict[str, Any]] = []
+        rich_results: list[dict[str, Any]] = []
+        quick_error: Exception | None = None
+
+        try:
+            quick_response = await asyncio.wait_for(
+                _request_form_json_quick("/api/v1/smart-search/search/", payload),
+                timeout=min(SEARCH_REMOTE_TIMEOUT, SEARCH_QUICK_TIMEOUT),
+            )
+            if quick_response.get("code") == 200:
+                quick_results = _normalize_search_response_items(
+                    (quick_response.get("data") or {}).get("manga") or [],
+                    normalized_query,
+                )
+        except Exception as error:
+            quick_error = error
+
+        should_try_rich = (
+            len(quick_results) < min(max(SEARCH_MIN_REMOTE_RESULTS, 1), max(1, int(limit)))
+            or bool(fallback_results)
+        )
+
+        if should_try_rich:
+            try:
+                rich_response = await asyncio.wait_for(
+                    _request_form_json("/api/v1/smart-search/search/", payload),
+                    timeout=min(SEARCH_REMOTE_TIMEOUT, SEARCH_RICH_TIMEOUT),
+                )
+                if rich_response.get("code") == 200:
+                    rich_results = _normalize_search_response_items(
+                        (rich_response.get("data") or {}).get("manga") or [],
+                        normalized_query,
+                    )
+            except Exception:
+                schedule_warm_catalog_cache()
+
+        merged = _merge_search_result_sets(quick_results, rich_results, fallback_results, limit=limit)
+        if merged:
+            return merged
+        if fallback_results:
+            return fallback_results
+        if quick_error is not None:
+            raise quick_error
+        return []
+
+    return await _dedup_fetch(cache_key, SEARCH_TTL, _load)
+
+
+def get_cached_search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]] | None:
+    normalized_query = _clean(query)
+    if not normalized_query:
+        return []
+    cache_key = f"smart-search:{normalized_query.lower()}:{limit}"
+    cached = _cache_get(cache_key, SEARCH_TTL)
+    if cached is None:
+        return None
+    return list(cached)
+
+
+async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any]:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        raise ValueError("title_id invalido para listar capitulos.")
+
+    lang = _clean(lang).lower() or ""
+    cache_key = f"chapter-list:{title_id}:{lang}"
+
+    async def _load():
+        payload: dict[str, Any] = {"title_id": title_id}
+        if lang:
+            payload["lang"] = lang
+
+        referer = _TITLE_URL_CACHE.get(title_id) or _absolute_url(f"/title-detail/{title_id}/")
+        try:
+            response = await _request_form_json_via_playwright(
+                "/api/v1/chapter/chapter-listing-by-title-id/",
+                payload,
+                referer,
+            )
+        except Exception:
+            response = await _request_form_json(
+                "/api/v1/chapter/chapter-listing-by-title-id/",
+                payload,
+            )
+        if response.get("code") != 200:
+            return {"title_id": title_id, "chapters": [], "languages": [], "total_translations": 0}
+
+        chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        return {
+            "title_id": title_id,
+            "chapters": chapters,
+            "languages": response.get("ALL_LANGUAGES") or [],
+            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+        }
+
+    return await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
+
+
+def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None = None, *, ascending: bool = False) -> list[dict[str, Any]]:
+    preferred_lang = _clean(preferred_lang).lower() or PREFERRED_CHAPTER_LANG
+    items: list[dict[str, Any]] = []
+
+    chapters = list(chapter_payload.get("chapters") or [])
+    if ascending:
+        chapters = list(reversed(chapters))
+
+    for chapter in chapters:
+        translation = _pick_translation(chapter.get("translations") or [], preferred_lang) or chapter.get("preferred_translation")
+        if not translation:
+            continue
+
+        items.append(
+            {
+                "chapter_id": translation["id"],
+                "chapter_url": translation["url"],
+                "chapter_number": chapter.get("chapter_number") or "",
+                "chapter_number_float": chapter.get("chapter_number_float") or "",
+                "chapter_language": translation.get("language") or "",
+                "chapter_volume": translation.get("volume") or "",
+                "group_name": translation.get("group_name") or "",
+                "updated_at": translation.get("date") or "",
+            }
+        )
+
+    return items
+
+
+def get_adjacent_chapters(
+    chapter_payload: dict[str, Any],
+    chapter_id: str,
+    preferred_lang: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    flattened = flatten_chapters(chapter_payload, preferred_lang, ascending=True)
+    current_id = _extract_chapter_id(chapter_id) or _clean(chapter_id)
+
+    for index, item in enumerate(flattened):
+        if item["chapter_id"] != current_id:
+            continue
+        previous_item = flattened[index - 1] if index > 0 else None
+        next_item = flattened[index + 1] if index + 1 < len(flattened) else None
+        return previous_item, next_item
+    return None, None
+
+
+async def _resolve_title_url_from_id(title_id: str) -> str:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        raise ValueError("title_id invalido.")
+
+    cached = _TITLE_URL_CACHE.get(title_id)
+    if cached:
+        return cached
+
+    direct_candidate = _absolute_url(f"/title-detail/{title_id}/")
+    direct_html = await _try_request_text(direct_candidate)
+    if direct_html and _extract_title_id(direct_html) == title_id:
+        _remember_title_url(title_id, direct_candidate)
+        return direct_candidate
+
+    chapter_payload = await get_chapter_list(title_id, PREFERRED_CHAPTER_LANG)
+    sample_translation = next(
+        (
+            translation
+            for chapter in chapter_payload.get("chapters") or []
+            for translation in (chapter.get("translations") or [])
+            if translation.get("url")
+        ),
+        None,
+    )
+    if sample_translation:
+        chapter_html = await _request_text(sample_translation["url"])
+        chapter_data = _parse_chapter_detail_html(chapter_html, sample_translation["url"])
+        title_url = chapter_data.get("title_url") or ""
+        if title_url:
+            _remember_title_url(title_id, title_url)
+            return title_url
+
+    _remember_title_url(title_id, direct_candidate)
+    return direct_candidate
+
+
+async def get_title_details(title_ref: str) -> dict[str, Any]:
+    title_ref = _clean(title_ref)
+    if not title_ref:
+        raise ValueError("Referencia de obra invalida.")
+
+    title_id = _extract_title_id(title_ref)
+    cache_key = f"title-details:{title_ref if '/title-detail/' in title_ref else title_id}"
+
+    async def _load():
+        if "/title-detail/" in title_ref:
+            url = _absolute_url(title_ref)
+        else:
+            url = await _resolve_title_url_from_id(title_id or title_ref)
+
+        html_text = await _request_text(url)
+        details = _parse_title_detail_html(html_text, url)
+        if not details.get("title_id") and title_id:
+            details["title_id"] = title_id
+            _remember_title_url(title_id, url)
+        return details
+
+    return await _dedup_fetch(cache_key, TITLE_TTL, _load)
+
+
+def _merge_title_metadata(details: dict[str, Any], anilist: dict[str, Any]) -> dict[str, Any]:
+    if not anilist:
+        return details
+
+    merged = dict(details)
+
+    genres = []
+    seen_genres: set[str] = set()
+    for raw in [*(details.get("genres") or []), *(anilist.get("anilist_genres") or [])]:
+        genre = _clean(raw)
+        normalized = genre.lower()
+        if not genre or normalized in seen_genres:
+            continue
+        seen_genres.add(normalized)
+        genres.append(genre)
+
+    alt_titles: list[str] = []
+    seen_alt_titles: set[str] = set()
+    for raw in [*(details.get("alt_titles") or []), *(anilist.get("anilist_titles") or [])]:
+        alt_title = _clean(raw)
+        normalized = _normalize_text(alt_title)
+        if not alt_title or not normalized:
+            continue
+        if normalized == _normalize_text(details.get("title") or ""):
+            continue
+        if normalized in seen_alt_titles:
+            continue
+        seen_alt_titles.add(normalized)
+        alt_titles.append(alt_title)
+
+    merged["alt_titles"] = alt_titles
+    merged["genres"] = genres
+    merged["anilist_id"] = anilist.get("anilist_id")
+    merged["anilist_url"] = anilist.get("anilist_url") or ""
+    merged["anilist_status"] = anilist.get("anilist_status") or ""
+    merged["anilist_format"] = anilist.get("anilist_format") or ""
+    merged["anilist_score"] = anilist.get("anilist_score") or 0
+    merged["anilist_chapters"] = anilist.get("anilist_chapters") or 0
+    merged["anilist_volumes"] = anilist.get("anilist_volumes") or 0
+    merged["anilist_country"] = anilist.get("anilist_country") or ""
+    merged["anilist_titles"] = anilist.get("anilist_titles") or []
+    merged["cover_color"] = anilist.get("cover_color") or ""
+    merged["banner_url"] = anilist.get("banner_url") or merged.get("background_url") or merged.get("cover_url") or ""
+    if not merged.get("background_url"):
+        merged["background_url"] = merged["banner_url"]
+    if not merged.get("cover_url") and anilist.get("cover_url_anilist"):
+        merged["cover_url"] = anilist["cover_url_anilist"]
+    if not merged.get("description") and anilist.get("anilist_description"):
+        merged["description"] = anilist["anilist_description"]
+    if not merged.get("status") and anilist.get("anilist_status"):
+        merged["status"] = anilist["anilist_status"]
+    if not merged.get("rating") and anilist.get("anilist_score"):
+        merged["rating"] = str(anilist["anilist_score"])
+    return merged
+
+
+async def _resolve_title_id_for_chapter(chapter: dict[str, Any]) -> str:
+    title_id = _extract_title_id(chapter.get("title_id")) or _extract_title_id(chapter.get("title_url"))
+    if title_id:
+        return title_id
+
+    title_url = _absolute_url(chapter.get("title_url"))
+    if title_url:
+        resolved_from_url = _extract_title_id(title_url)
+        if resolved_from_url:
+            _remember_title_url(resolved_from_url, title_url)
+            return resolved_from_url
+        try:
+            title_details = await get_title_details(title_url)
+            resolved_from_details = _extract_title_id(title_details.get("title_id"))
+            if resolved_from_details:
+                return resolved_from_details
+        except Exception:
+            pass
+
+    title_name = _clean(chapter.get("title"))
+    alt_candidates: list[str] = []
+    if not title_name and chapter.get("chapter_url"):
+        inferred_name, _ = _clean_chapter_title(chapter.get("title") or "")
+        if inferred_name:
+            title_name = inferred_name
+
+    if not title_name:
+        return ""
+
+    normalized_title = _normalize_text(title_name)
+    search_terms = [title_name]
+    for extra in alt_candidates:
+        if _clean(extra) and _clean(extra) not in search_terms:
+            search_terms.append(_clean(extra))
+
+    collected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for term in search_terms[:3]:
+        try:
+            candidates = await search_titles(term, limit=8)
+        except Exception:
+            continue
+        for item in candidates:
+            candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+            if not candidate_id or candidate_id in seen_ids:
+                continue
+            seen_ids.add(candidate_id)
+            collected.append(item)
+
+    for item in collected:
+        candidate_title = _normalize_text(item.get("title") or item.get("display_title") or "")
+        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+        if candidate_id and candidate_title == normalized_title:
+            return candidate_id
+
+    for item in collected:
+        candidate_title = _normalize_text(item.get("title") or item.get("display_title") or "")
+        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+        if candidate_id and normalized_title and (normalized_title in candidate_title or candidate_title in normalized_title):
+            return candidate_id
+
+    for item in collected:
+        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+        if candidate_id:
+            return candidate_id
+
+    return ""
+
+
+async def get_title_bundle(title_ref: str, lang: str | None = None) -> dict[str, Any]:
+    resolved_lang = lang or PREFERRED_CHAPTER_LANG
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref)
+    cache_key = f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
+
+    async def _load():
+        details = await get_title_details(title_ref)
+        chapters_payload, anilist = await asyncio.gather(
+            get_chapter_list(details["title_id"], resolved_lang),
+            enrich_title_metadata(details.get("title") or "", details.get("alt_titles") or []),
+        )
+        merged = _merge_title_metadata(details, anilist)
+        merged["chapters"] = chapters_payload["chapters"]
+        merged["languages"] = chapters_payload["languages"]
+        merged["total_chapters"] = len(chapters_payload["chapters"])
+        latest = flatten_chapters(chapters_payload, resolved_lang)
+        merged["latest_chapter"] = latest[0] if latest else None
+        return merged
+
+    return await _dedup_fetch(cache_key, BUNDLE_TTL, _load)
+
+
+async def get_title_overview(title_ref: str) -> dict[str, Any]:
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref)
+    cache_key = f"title-overview:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}"
+
+    async def _load():
+        details = await get_title_details(title_ref)
+        anilist = await enrich_title_metadata(details.get("title") or "", [])
+        merged = _merge_title_metadata(details, anilist)
+        merged.setdefault("chapters", [])
+        merged.setdefault("languages", [])
+        merged.setdefault("total_chapters", 0)
+        merged.setdefault("latest_chapter", None)
+        return merged
+
+    return await _dedup_fetch(cache_key, TITLE_TTL, _load)
+
+
+def get_cached_title_overview(title_ref: str) -> dict[str, Any] | None:
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref)
+    cache_key = f"title-overview:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}"
+    cached = _cache_get(cache_key, TITLE_TTL)
+    if cached is None:
+        return None
+    return dict(cached)
+
+
+def get_cached_title_bundle(title_ref: str, lang: str | None = None) -> dict[str, Any] | None:
+    resolved_lang = lang or PREFERRED_CHAPTER_LANG
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref)
+    cache_key = f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
+    cached = _cache_get(cache_key, BUNDLE_TTL)
+    if cached is None:
+        return None
+    return dict(cached)
+
+
+async def get_chapter_details(chapter_ref: str) -> dict[str, Any]:
+    chapter_ref = _clean(chapter_ref)
+    if not chapter_ref:
+        raise ValueError("Referencia de capitulo invalida.")
+
+    chapter_id = _extract_chapter_id(chapter_ref)
+    cache_key = f"chapter-details:{chapter_ref if '/chapter-detail/' in chapter_ref else chapter_id}"
+
+    async def _load():
+        if "/chapter-detail/" in chapter_ref:
+            url = _absolute_url(chapter_ref)
+        else:
+            url = _CHAPTER_URL_CACHE.get(chapter_id) or _absolute_url(f"/chapter-detail/{chapter_id}/")
+
+        html_text = await _request_text(url)
+        details = _parse_chapter_detail_html(html_text, url)
+        if not details.get("chapter_id") and chapter_id:
+            details["chapter_id"] = chapter_id
+        return details
+
+    return await _dedup_fetch(cache_key, CHAPTER_TTL, _load)
+
+
+async def get_chapter_reader_payload(chapter_ref: str, lang: str | None = None) -> dict[str, Any]:
+    resolved_lang = lang or PREFERRED_CHAPTER_LANG
+    chapter_ref = _clean(chapter_ref)
+    chapter_id = _extract_chapter_id(chapter_ref)
+    cache_key = f"reader:{chapter_ref if '/chapter-detail/' in chapter_ref else chapter_id or chapter_ref}:{resolved_lang}"
+
+    async def _load():
+        chapter = await get_chapter_details(chapter_ref)
+        if not _extract_title_id(chapter.get("title_id")):
+            chapter["title_id"] = await _resolve_title_id_for_chapter(chapter)
+        if not _extract_title_id(chapter.get("title_id")):
+            raise RuntimeError("Nao consegui vincular esse capitulo a obra principal.")
+        chapter_payload = await get_chapter_list(
+            chapter["title_id"],
+            resolved_lang or chapter.get("chapter_language") or PREFERRED_CHAPTER_LANG,
+        )
+        preferred_lang = chapter.get("chapter_language") or resolved_lang or PREFERRED_CHAPTER_LANG
+        previous_chapter, next_chapter = get_adjacent_chapters(
+            chapter_payload,
+            chapter["chapter_id"],
+            preferred_lang,
+        )
+
+        return {
+            **chapter,
+            "previous_chapter": previous_chapter,
+            "next_chapter": next_chapter,
+            "total_chapters": len(chapter_payload.get("chapters") or []),
+        }
+
+    return await _dedup_fetch(cache_key, READER_TTL, _load)
+
+
+def get_cached_chapter_reader_payload(chapter_ref: str, lang: str | None = None) -> dict[str, Any] | None:
+    resolved_lang = lang or PREFERRED_CHAPTER_LANG
+    chapter_ref = _clean(chapter_ref)
+    chapter_id = _extract_chapter_id(chapter_ref)
+    cache_key = f"reader:{chapter_ref if '/chapter-detail/' in chapter_ref else chapter_id or chapter_ref}:{resolved_lang}"
+    cached = _cache_get(cache_key, READER_TTL)
+    if cached is None:
+        return None
+    return dict(cached)
+
+
+async def get_home_payload(limit: int = HOME_SECTION_LIMIT) -> dict[str, Any]:
+    limit = max(4, int(limit))
+
+    featured, popular, recent_titles, latest_titles = await asyncio.gather(
+        get_title_search("getFeatured", limit=min(limit, 10)),
+        get_title_search("getPopular", limit=limit),
+        get_title_search("getRecentRead", limit=limit, search_time=RECENT_CHAPTER_TIME),
+        get_title_search("getLatestTable", limit=limit),
+    )
+
+    return {
+        "featured": featured,
+        "popular": popular,
+        "recent_titles": recent_titles,
+        "latest_titles": latest_titles,
+    }
+
+
+def get_cached_home_snapshot(limit: int = HOME_SECTION_LIMIT) -> dict[str, Any]:
+    limit = max(4, int(limit))
+    return {
+        "featured": get_cached_title_search("getFeatured", limit=min(limit, 10)),
+        "popular": get_cached_title_search("getPopular", limit=limit),
+        "recent_titles": get_cached_title_search("getRecentRead", limit=limit, search_time=RECENT_CHAPTER_TIME),
+        "latest_titles": get_cached_title_search("getLatestTable", limit=limit),
+    }
+
+
+async def get_recent_chapters(limit: int = AUTO_POST_LIMIT) -> list[dict[str, Any]]:
+    raw_items = await get_title_search(
+        "getRecentChapterRead",
+        limit=max(1, int(limit)),
+        search_time=RECENT_CHAPTER_TIME,
+    )
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in raw_items:
+        title_id = item.get("title_id") or ""
+        chapter_id = item.get("chapter_id") or ""
+        chapter_url = item.get("chapter_url") or ""
+
+        if not chapter_id and title_id:
+            try:
+                chapter_payload = await get_chapter_list(title_id, PREFERRED_CHAPTER_LANG)
+            except Exception:
+                continue
+            latest = flatten_chapters(chapter_payload, PREFERRED_CHAPTER_LANG)
+            if latest:
+                chapter_id = latest[0]["chapter_id"]
+                chapter_url = latest[0]["chapter_url"]
+                item["latest_chapter"] = latest[0]["chapter_number"]
+
+        if not chapter_id:
+            continue
+
+        key = chapter_id
+        if key in seen:
+            continue
+        seen.add(key)
+
+        chapter_number = item.get("latest_chapter") or ""
+        if not chapter_number and chapter_url:
+            try:
+                chapter_data = await get_chapter_details(chapter_url)
+                chapter_number = chapter_data.get("chapter_number") or ""
+                if not item.get("title"):
+                    item["title"] = chapter_data.get("title") or item.get("title")
+                if title_id and not item.get("url") and chapter_data.get("title_url"):
+                    item["url"] = chapter_data["title_url"]
+            except Exception:
+                pass
+
+        results.append(
+            {
+                "title_id": title_id,
+                "title": item.get("title") or "Manga",
+                "display_title": item.get("display_title") or item.get("title") or "Manga",
+                "cover_url": item.get("cover_url") or "",
+                "background_url": item.get("background_url") or item.get("cover_url") or "",
+                "status": item.get("status") or "",
+                "updated_at": item.get("updated_at") or "",
+                "chapter_id": chapter_id,
+                "chapter_url": chapter_url,
+                "chapter_number": chapter_number,
+            }
+        )
+
+    return results[: max(1, int(limit))]
+
+
+async def warm_catalog_cache(*, include_home: bool = True) -> None:
+    if not BASE_URL:
+        return
+
+    try:
+        await _ensure_browser_session()
+    except Exception:
+        pass
+
+    if include_home:
+        try:
+            await asyncio.gather(
+                get_title_search("getFeatured", limit=6),
+                get_title_search("getPopular", limit=6),
+                get_title_search("getRecentRead", limit=6, search_time=RECENT_CHAPTER_TIME),
+                get_title_search("getLatestTable", limit=6),
+                get_recent_chapters(limit=min(AUTO_POST_LIMIT, 6)),
+            )
+        except Exception:
+            pass
+
+
+def schedule_warm_catalog_cache() -> asyncio.Task | None:
+    global _WARMUP_TASK
+    if _WARMUP_TASK and not _WARMUP_TASK.done():
+        return _WARMUP_TASK
+
+    try:
+        _WARMUP_TASK = asyncio.create_task(warm_catalog_cache())
+    except RuntimeError:
+        _WARMUP_TASK = None
+    return _WARMUP_TASK
+
+
+def prefetch_title_bundles(title_refs: list[str], *, lang: str | None = None, limit: int = 3) -> asyncio.Task | None:
+    refs = [(_clean(item)) for item in title_refs if _clean(item)]
+    refs = refs[: max(0, limit)]
+    if not refs:
+        return None
+
+    async def _runner():
+        await asyncio.gather(*(get_title_bundle(ref, lang) for ref in refs), return_exceptions=True)
+
+    try:
+        return asyncio.create_task(_runner())
+    except RuntimeError:
+        return None
+
+
+def prefetch_reader_payloads(chapter_refs: list[str], *, lang: str | None = None, limit: int = 3) -> asyncio.Task | None:
+    refs = [(_clean(item)) for item in chapter_refs if _clean(item)]
+    refs = refs[: max(0, limit)]
+    if not refs:
+        return None
+
+    async def _runner():
+        await asyncio.gather(*(get_chapter_reader_payload(ref, lang) for ref in refs), return_exceptions=True)
+
+    try:
+        return asyncio.create_task(_runner())
+    except RuntimeError:
+        return None
