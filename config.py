@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -72,12 +72,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-CATALOG_SITE_BASE = (
-    os.getenv("CATALOG_SITE_BASE", "").strip()
-    or os.getenv("SOURCE_SITE_BASE", "").strip()
-).rstrip("/")
-
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8719336176:AAGsY1XJ4yJqlM5wOIZdkDVImVzN6K6bEYw").strip()
 CATALOG_SITE_BASE = (
     os.getenv("CATALOG_SITE_BASE", "https://mangaball.net").strip()
@@ -87,10 +81,19 @@ CATALOG_SITE_BASE = (
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@MangasBrasil").strip()
 REQUIRED_CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL", "t.me/MangasBrasil").strip()
 BOT_USERNAME = os.getenv("BOT_USERNAME", "MangasBaltigo_Bot").strip().lstrip("@")
-CANAL_POSTAGEM = os.getenv("CANAL_POSTAGEM", "@MangasBrasil").strip()
 BOT_BRAND = os.getenv("BOT_BRAND", "Mangas Baltigo").strip()
 WEBAPP_BASE_URL = os.getenv("WEBAPP_BASE_URL", "").strip().rstrip("/")
 CANAL_POSTAGEM = os.getenv("CANAL_POSTAGEM", "@MangasBrasil").strip()
+CANAL_POSTAGEM_MANGA = (
+    os.getenv("CANAL_POSTAGEM_MANGA", "@MangasBrasil").strip()
+    or os.getenv("POSTMANGA_CHANNEL", "@MangasBrasil").strip()
+    or CANAL_POSTAGEM
+)
+CANAL_POSTAGEM_CAPITULOS = (
+    os.getenv("CANAL_POSTAGEM_CAPITULOS", "@AtualizacoesOn").strip()
+    or os.getenv("AUTO_POST_CHANNEL", "@AtualizacoesOn").strip()
+    or CANAL_POSTAGEM
+)
 
 ADMIN_IDS = [
     int(value.strip())
@@ -145,4 +148,3 @@ AI_TIMEZONE = os.getenv("AI_TIMEZONE", "America/Cuiaba").strip()
 AI_QUIET_HOURS_START = _env_optional_int("AI_QUIET_HOURS_START")
 AI_QUIET_HOURS_END = _env_optional_int("AI_QUIET_HOURS_END")
 AI_ENABLED = bool(AI_API_KEY and AI_API_URL and AI_MODEL)
-
