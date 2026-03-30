@@ -7,14 +7,34 @@ import re
 import time
 import unicodedata
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
 
-if not os.getenv("PLAYWRIGHT_BROWSERS_PATH") and os.path.isdir("/app/.playwright"):
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright"
+def _detect_playwright_browser_root() -> str:
+    candidates = [
+        os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip(),
+        "/app/.playwright",
+        "/ms-playwright",
+        str(Path.home() / ".cache" / "ms-playwright"),
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or candidate == "0":
+            continue
+        seen.add(candidate)
+        if Path(candidate).exists():
+            return candidate
+    return ""
+
+
+_PLAYWRIGHT_BROWSER_ROOT = _detect_playwright_browser_root()
+if not os.getenv("PLAYWRIGHT_BROWSERS_PATH") and _PLAYWRIGHT_BROWSER_ROOT:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _PLAYWRIGHT_BROWSER_ROOT
+os.environ.setdefault("PLAYWRIGHT_SKIP_BROWSER_GC", "1")
 
 try:
     from playwright.async_api import async_playwright
@@ -107,6 +127,46 @@ TITLE_VARIANT_LABELS: list[tuple[str, str]] = [
     ("manhua", "Manhua"),
     ("novel", "Novel"),
 ]
+
+
+def _resolve_playwright_executable() -> str:
+    roots = [
+        os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip(),
+        _PLAYWRIGHT_BROWSER_ROOT,
+        "/app/.playwright",
+        "/ms-playwright",
+        str(Path.home() / ".cache" / "ms-playwright"),
+    ]
+    patterns = [
+        "chromium-*/chrome-linux/chrome",
+        "chromium-*/chrome-win/chrome.exe",
+        "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        "chromium_headless_shell-*/chrome-linux/headless_shell",
+        "chromium_headless_shell-*/chrome-win/headless_shell.exe",
+        "chromium_headless_shell-*/chrome-mac/headless_shell",
+    ]
+
+    seen_roots: set[str] = set()
+    for root_text in roots:
+        if not root_text or root_text in seen_roots or root_text == "0":
+            continue
+        seen_roots.add(root_text)
+        root = Path(root_text)
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            matches = sorted(root.glob(pattern), reverse=True)
+            for match in matches:
+                if match.is_file():
+                    return str(match)
+    return ""
+
+
+def _playwright_launch_kwargs() -> dict[str, Any]:
+    executable_path = _resolve_playwright_executable()
+    if executable_path:
+        return {"headless": True, "executable_path": executable_path}
+    return {"headless": True, "channel": "chromium"}
 
 
 def clear_catalog_cache() -> None:
@@ -525,7 +585,7 @@ async def _ensure_browser_session(force_refresh: bool = False) -> dict[str, Any]
             }
 
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
+            browser = await playwright.chromium.launch(**_playwright_launch_kwargs())
             context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -599,7 +659,7 @@ async def _request_form_json_via_playwright(path: str, data: dict[str, Any], ref
     referer = _absolute_url(referer) or f"{BASE_URL}/"
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(**_playwright_launch_kwargs())
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
