@@ -5,7 +5,7 @@ import unicodedata
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_IDS, BOT_BRAND, BOT_USERNAME, CANAL_POSTAGEM, STICKER_DIVISOR
+from config import ADMIN_IDS, BOT_BRAND, BOT_USERNAME, STICKER_DIVISOR
 from services.catalog_client import (
     get_cached_title_bundle,
     get_cached_title_overview,
