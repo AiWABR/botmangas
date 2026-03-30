@@ -5,7 +5,8 @@ import unicodedata
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_IDS, BOT_BRAND, BOT_USERNAME, STICKER_DIVISOR
+from config import ADMIN_IDS, BOT_BRAND, BOT_USERNAME, CANAL_POSTAGEM_MANGA, STICKER_DIVISOR
+from core.channel_target import ensure_channel_target
 from services.catalog_client import (
     get_cached_title_bundle,
     get_cached_title_overview,
@@ -139,64 +140,31 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
 
 
 def _build_caption(manga: dict) -> str:
-    title = html.escape(_pick_main_title(manga)).upper()
+    full_title = html.escape(_pick_main_title(manga)).upper()
     genres = manga.get("genres") or []
     genres_text = ", ".join(f"#{genre}" for genre in genres[:4]) if genres else "N/A"
     genres_text = html.escape(genres_text)
 
     chapters = manga.get("total_chapters") or manga.get("anilist_chapters") or "?"
-    volumes = manga.get("anilist_volumes") or ""
     status = _translate_status(manga.get("status") or manga.get("anilist_status") or "N/A")
-    fmt = _translate_format(manga.get("anilist_format") or "MANGA")
-    score = manga.get("anilist_score") or manga.get("rating") or ""
     description = html.escape(
-        _truncate_text(_clean_description(manga.get("description") or manga.get("anilist_description") or ""), 180)
+        _truncate_text(_clean_description(manga.get("description") or manga.get("anilist_description") or ""), 320)
     )
 
-    meta_lines = [
-        f"» <b>Status:</b> <i>{html.escape(str(status))}</i>",
-        f"» <b>Formato:</b> <i>{html.escape(str(fmt))}</i>",
-        f"» <b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>",
-        f"» <b>Generos:</b> <i>{genres_text}</i>",
-    ]
-    if volumes:
-        meta_lines.append(f"» <b>Volumes:</b> <i>{html.escape(str(volumes))}</i>")
-    if score:
-        meta_lines.append(f"» <b>Nota:</b> <i>{html.escape(str(score))}</i>")
-
-    body = f"📚 <b>{title}</b>\n\n{chr(10).join(meta_lines)}"
-    if description:
-        body += f"\n\n💬 <i>{description}</i>"
-    body += f"\n\n✨ <i>Abra no {html.escape(BOT_BRAND)} e continue a leitura com poucos toques.</i>"
-    return body
+    return (
+        f"📚 <b>{full_title}</b>\n\n"
+        f"<b>Generos:</b> <i>{genres_text}</i>\n"
+        f"<b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>\n"
+        f"<b>Status:</b> <i>{html.escape(str(status))}</i>\n\n"
+        f"💬 {description or 'Sem descricao disponivel.'}"
+    )
 
 
 def _build_keyboard(manga: dict) -> InlineKeyboardMarkup:
     title_id = manga.get("title_id") or ""
-    latest = _latest_chapter_summary(manga)
-    rows = [
-        [
-            InlineKeyboardButton(
-                "📚 Abrir obra",
-                url=f"https://t.me/{BOT_USERNAME}?start=title_{title_id}",
-            )
-        ]
-    ]
-
-    if latest.get("chapter_id"):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "🆕 Ultimo capitulo",
-                    url=f"https://t.me/{BOT_USERNAME}?start=ch_{latest['chapter_id']}",
-                )
-            ]
-        )
-
-    if manga.get("anilist_url"):
-        rows.append([InlineKeyboardButton("⭐ AniList", url=manga["anilist_url"])])
-
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📚 Ler obra", url=f"https://t.me/{BOT_USERNAME}?start=title_{title_id}")]]
+    )
 
 
 async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -265,7 +233,7 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = manga.get("banner_url") or manga.get("cover_url") or manga.get("background_url") or None
         caption = _build_caption(manga)
         keyboard = _build_keyboard(manga)
-        destination = "@AtualizacoesOn"
+        destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or message.chat_id)
 
         if photo:
             try:
@@ -304,6 +272,6 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as error:
         print("ERRO POSTMANGA:", repr(error))
         await status_message.edit_text(
-            "❌ <b>Nao consegui postar esse manga.</b>\n\nTente novamente em instantes.",
+            f"❌ <b>Nao consegui postar esse manga.</b>\n\n{html.escape(str(error) or 'Tente novamente em instantes.')}",
             parse_mode="HTML",
         )
