@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
+import os
 import re
 import time
 import unicodedata
@@ -12,6 +12,9 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+
+if not os.getenv("PLAYWRIGHT_BROWSERS_PATH") and os.path.isdir("/app/.playwright"):
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/app/.playwright"
 
 try:
     from playwright.async_api import async_playwright
@@ -39,6 +42,7 @@ _CACHE: dict[str, dict[str, Any]] = {}
 _INFLIGHT: dict[str, asyncio.Task] = {}
 _TITLE_URL_CACHE: dict[str, str] = {}
 _CHAPTER_URL_CACHE: dict[str, str] = {}
+_CHAPTER_TITLE_CACHE: dict[str, str] = {}
 _CSRF_TOKEN: dict[str, Any] = {"value": "", "expires_at": 0.0}
 _BROWSER_SESSION: dict[str, Any] = {"cookies": {}, "csrf_token": "", "expires_at": 0.0}
 _BROWSER_SESSION_LOCK = asyncio.Lock()
@@ -48,7 +52,8 @@ PLAYWRIGHT_SESSION_TTL = 1800
 SEARCH_REMOTE_TIMEOUT = 8.0
 SEARCH_QUICK_TIMEOUT = 3.4
 SEARCH_RICH_TIMEOUT = 4.6
-SEARCH_MIN_REMOTE_RESULTS = 3
+SEARCH_MIN_REMOTE_RESULTS = 6
+SEARCH_CACHE_VERSION = "v2"
 LOCAL_SEARCH_SEED_TTL = 300
 FORM_QUICK_TIMEOUT = httpx.Timeout(5.5, connect=4.0, read=5.5, write=5.5, pool=5.5)
 
@@ -109,6 +114,7 @@ def clear_catalog_cache() -> None:
     _INFLIGHT.clear()
     _TITLE_URL_CACHE.clear()
     _CHAPTER_URL_CACHE.clear()
+    _CHAPTER_TITLE_CACHE.clear()
     _CSRF_TOKEN["value"] = ""
     _CSRF_TOKEN["expires_at"] = 0.0
     _BROWSER_SESSION["cookies"] = {}
@@ -335,6 +341,33 @@ def _fallback_search_titles(query: str, limit: int) -> list[dict[str, Any]]:
     return [item for _, item in scored[: max(1, int(limit))]]
 
 
+def get_search_fallback_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]]:
+    return list(_fallback_search_titles(query, limit))
+
+
+def _search_cache_key(query: str, limit: int) -> str:
+    return f"smart-search:{SEARCH_CACHE_VERSION}:{query.lower()}:{limit}"
+
+
+def _search_cache_entry(query: str, limit: int) -> tuple[list[dict[str, Any]] | None, bool]:
+    cache_key = _search_cache_key(query, limit)
+    cached = _cache_get(cache_key, SEARCH_TTL)
+    if cached is None:
+        return None, False
+
+    if isinstance(cached, dict) and isinstance(cached.get("items"), list):
+        return list(cached.get("items") or []), bool(cached.get("partial"))
+
+    if isinstance(cached, list):
+        # Legacy cache shape from older versions; ignore suspicious short sets.
+        items = list(cached)
+        min_results = min(max(SEARCH_MIN_REMOTE_RESULTS, 1), max(1, int(limit)))
+        partial = len(items) < min_results
+        return items, partial
+
+    return None, False
+
+
 def _normalize_search_response_items(results: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     normalized = [
         item
@@ -437,6 +470,13 @@ def _remember_chapter_url(chapter_id: str, url: str) -> None:
         _CHAPTER_URL_CACHE[chapter_id] = url
 
 
+def _remember_chapter_title(chapter_id: str, title_id: str) -> None:
+    chapter_id = _extract_chapter_id(chapter_id) or _clean(chapter_id)
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if chapter_id and title_id:
+        _CHAPTER_TITLE_CACHE[chapter_id] = title_id
+
+
 def _extract_meta_content(soup: BeautifulSoup, prop: str) -> str:
     node = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
     if not node:
@@ -486,31 +526,25 @@ async def _ensure_browser_session(force_refresh: bool = False) -> dict[str, Any]
 
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
-            context = None
-            try:
-                context = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    locale="pt-BR",
-                )
-                page = await context.new_page()
-                await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                locale="pt-BR",
+            )
+            page = await context.new_page()
+            await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
 
-                csrf_token = _clean(await page.locator("meta[name='csrf-token']").get_attribute("content"))
-                cookies = {
-                    _clean(item.get("name")): _clean(item.get("value"))
-                    for item in (await context.cookies())
-                    if _clean(item.get("name")) and _clean(item.get("value"))
-                }
-            finally:
-                if context is not None:
-                    with contextlib.suppress(Exception):
-                        await context.close()
-                with contextlib.suppress(Exception):
-                    await browser.close()
+            csrf_token = _clean(await page.locator("meta[name='csrf-token']").get_attribute("content"))
+            cookies = {
+                _clean(item.get("name")): _clean(item.get("value"))
+                for item in (await context.cookies())
+                if _clean(item.get("name")) and _clean(item.get("value"))
+            }
+
+            await browser.close()
 
         if not csrf_token or not cookies:
             raise RuntimeError("Nao foi possivel obter a sessao protegida da fonte.")
@@ -566,32 +600,25 @@ async def _request_form_json_via_playwright(path: str, data: dict[str, Any], ref
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
-        context = None
-        try:
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                locale="pt-BR",
-            )
-            page = await context.new_page()
-            await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
-            headers = await _build_ajax_headers(
-                {
-                    "csrf_token": _clean(await page.locator("meta[name='csrf-token']").get_attribute("content")),
-                },
-                referer,
-            )
-            response = await context.request.post(url, form=data, headers=headers)
-            response_text = await response.text()
-        finally:
-            if context is not None:
-                with contextlib.suppress(Exception):
-                    await context.close()
-            with contextlib.suppress(Exception):
-                await browser.close()
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="pt-BR",
+        )
+        page = await context.new_page()
+        await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
+        headers = await _build_ajax_headers(
+            {
+                "csrf_token": _clean(await page.locator("meta[name='csrf-token']").get_attribute("content")),
+            },
+            referer,
+        )
+        response = await context.request.post(url, form=data, headers=headers)
+        response_text = await response.text()
+        await browser.close()
 
     if response.status != 200:
         raise RuntimeError(f"Playwright recebeu HTTP {response.status} ao consultar {url}.")
@@ -657,8 +684,8 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
     title_window = lines[anchor_index: anchor_index + 80] if lines else []
 
     genres: list[str] = []
-    authors: list[str] = []
     alt_titles: list[str] = []
+    authors: list[str] = []
     description = ""
     published = ""
     status = ""
@@ -712,41 +739,6 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
     if primary_genres:
         genres = primary_genres
 
-    raw_alt_titles: list[str] = []
-    alt_labels = {"alternative", "alternative titles", "alt title", "alt titles", "associated names", "other name", "other names"}
-    for index, line in enumerate(lines):
-        normalized = line.lower()
-        if normalized not in alt_labels:
-            continue
-        for candidate in lines[index + 1:index + 8]:
-            candidate_norm = candidate.lower()
-            if (
-                not candidate
-                or candidate == title
-                or candidate in genres
-                or ":" in candidate
-                or candidate_norm in KNOWN_STATUSES
-                or candidate_norm in STOP_DESCRIPTION_LABELS
-                or candidate_norm == "published"
-                or candidate_norm.startswith("published:")
-            ):
-                break
-            raw_alt_titles.extend(_parse_list_line(candidate, separator="/"))
-            if "," in candidate:
-                raw_alt_titles.extend(_parse_list_line(candidate, separator=","))
-        break
-
-    alt_titles_seen: set[str] = set()
-    for candidate in raw_alt_titles:
-        cleaned = _clean(candidate)
-        if not cleaned:
-            continue
-        key = _normalize_text(cleaned)
-        if not key or key == _normalize_text(title) or key in alt_titles_seen:
-            continue
-        alt_titles_seen.add(key)
-        alt_titles.append(cleaned)
-
     published_index = next((index for index, line in enumerate(title_window) if line.lower().startswith("published:")), -1)
     if published_index > 0:
         for line in reversed(title_window[:published_index]):
@@ -773,7 +765,7 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
         "title_id": title_id,
         "url": _absolute_url(og_url or requested_url),
         "title": title,
-        "alt_titles": alt_titles,
+        "alt_titles": [],
         "description": description,
         "cover_url": _absolute_url(og_image),
         "background_url": _absolute_url(og_image),
@@ -1173,11 +1165,22 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
     if not normalized_query:
         return []
 
-    cache_key = f"smart-search:{normalized_query.lower()}:{limit}"
+    cache_key = _search_cache_key(normalized_query, limit)
+    cached_items, cached_partial = _search_cache_entry(normalized_query, limit)
+    if cached_items is not None and not cached_partial:
+        return cached_items
 
-    async def _load():
+    task = _INFLIGHT.get(cache_key)
+    if task:
+        return await task
+
+    async def _load() -> tuple[list[dict[str, Any]], bool]:
         fallback_results = _fallback_search_titles(normalized_query, limit)
-        payload = {"search_input": normalized_query}
+        payload = {
+            "search_input": normalized_query,
+            "search_limit": max(8, int(limit)),
+            "limit": max(8, int(limit)),
+        }
         quick_results: list[dict[str, Any]] = []
         rich_results: list[dict[str, Any]] = []
         quick_error: Exception | None = None
@@ -1216,25 +1219,35 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
 
         merged = _merge_search_result_sets(quick_results, rich_results, fallback_results, limit=limit)
         if merged:
-            return merged
+            return merged, not bool(quick_results or rich_results)
         if fallback_results:
-            return fallback_results
+            return fallback_results, True
         if quick_error is not None:
             raise quick_error
-        return []
+        return [], False
 
-    return await _dedup_fetch(cache_key, SEARCH_TTL, _load)
+    async def _runner():
+        items, partial = await _load()
+        if not partial:
+            _cache_set(cache_key, {"items": items, "partial": False})
+        return items
+
+    task = asyncio.create_task(_runner())
+    _INFLIGHT[cache_key] = task
+    try:
+        return await task
+    finally:
+        _INFLIGHT.pop(cache_key, None)
 
 
 def get_cached_search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]] | None:
     normalized_query = _clean(query)
     if not normalized_query:
         return []
-    cache_key = f"smart-search:{normalized_query.lower()}:{limit}"
-    cached = _cache_get(cache_key, SEARCH_TTL)
-    if cached is None:
+    cached, partial = _search_cache_entry(normalized_query, limit)
+    if cached is None or partial:
         return None
-    return list(cached)
+    return cached
 
 
 async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any]:
@@ -1279,6 +1292,7 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
 def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None = None, *, ascending: bool = False) -> list[dict[str, Any]]:
     preferred_lang = _clean(preferred_lang).lower() or PREFERRED_CHAPTER_LANG
     items: list[dict[str, Any]] = []
+    payload_title_id = _extract_title_id(chapter_payload.get("title_id")) or _clean(chapter_payload.get("title_id"))
 
     chapters = list(chapter_payload.get("chapters") or [])
     if ascending:
@@ -1293,6 +1307,7 @@ def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None
             {
                 "chapter_id": translation["id"],
                 "chapter_url": translation["url"],
+                "title_id": payload_title_id,
                 "chapter_number": chapter.get("chapter_number") or "",
                 "chapter_number_float": chapter.get("chapter_number_float") or "",
                 "chapter_language": translation.get("language") or "",
@@ -1301,6 +1316,7 @@ def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None
                 "updated_at": translation.get("date") or "",
             }
         )
+        _remember_chapter_title(translation["id"], payload_title_id)
 
     return items
 
@@ -1399,21 +1415,7 @@ def _merge_title_metadata(details: dict[str, Any], anilist: dict[str, Any]) -> d
         seen_genres.add(normalized)
         genres.append(genre)
 
-    alt_titles: list[str] = []
-    seen_alt_titles: set[str] = set()
-    for raw in [*(details.get("alt_titles") or []), *(anilist.get("anilist_titles") or [])]:
-        alt_title = _clean(raw)
-        normalized = _normalize_text(alt_title)
-        if not alt_title or not normalized:
-            continue
-        if normalized == _normalize_text(details.get("title") or ""):
-            continue
-        if normalized in seen_alt_titles:
-            continue
-        seen_alt_titles.add(normalized)
-        alt_titles.append(alt_title)
-
-    merged["alt_titles"] = alt_titles
+    merged["alt_titles"] = []
     merged["genres"] = genres
     merged["anilist_id"] = anilist.get("anilist_id")
     merged["anilist_url"] = anilist.get("anilist_url") or ""
@@ -1439,70 +1441,38 @@ def _merge_title_metadata(details: dict[str, Any], anilist: dict[str, Any]) -> d
     return merged
 
 
-async def _resolve_title_id_for_chapter(chapter: dict[str, Any]) -> str:
-    title_id = _extract_title_id(chapter.get("title_id")) or _extract_title_id(chapter.get("title_url"))
+async def _resolve_title_id_for_chapter(chapter: dict[str, Any], title_hint: str = "") -> str:
+    title_id = (
+        _extract_title_id(chapter.get("title_id"))
+        or _extract_title_id(chapter.get("title_url"))
+        or _extract_title_id(title_hint)
+        or _CHAPTER_TITLE_CACHE.get(_extract_chapter_id(chapter.get("chapter_id")) or "")
+    )
     if title_id:
+        _remember_chapter_title(chapter.get("chapter_id") or "", title_id)
         return title_id
 
-    title_url = _absolute_url(chapter.get("title_url"))
-    if title_url:
-        resolved_from_url = _extract_title_id(title_url)
-        if resolved_from_url:
-            _remember_title_url(resolved_from_url, title_url)
-            return resolved_from_url
-        try:
-            title_details = await get_title_details(title_url)
-            resolved_from_details = _extract_title_id(title_details.get("title_id"))
-            if resolved_from_details:
-                return resolved_from_details
-        except Exception:
-            pass
-
     title_name = _clean(chapter.get("title"))
-    alt_candidates: list[str] = []
-    if not title_name and chapter.get("chapter_url"):
-        inferred_name, _ = _clean_chapter_title(chapter.get("title") or "")
-        if inferred_name:
-            title_name = inferred_name
-
     if not title_name:
         return ""
 
+    try:
+        candidates = await search_titles(title_name, limit=5)
+    except Exception:
+        return ""
+
     normalized_title = _normalize_text(title_name)
-    search_terms = [title_name]
-    for extra in alt_candidates:
-        if _clean(extra) and _clean(extra) not in search_terms:
-            search_terms.append(_clean(extra))
-
-    collected: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for term in search_terms[:3]:
-        try:
-            candidates = await search_titles(term, limit=8)
-        except Exception:
-            continue
-        for item in candidates:
-            candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
-            if not candidate_id or candidate_id in seen_ids:
-                continue
-            seen_ids.add(candidate_id)
-            collected.append(item)
-
-    for item in collected:
-        candidate_title = _normalize_text(item.get("title") or item.get("display_title") or "")
-        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+    for item in candidates:
+        candidate_title = _normalize_text(item.get("title") or "")
+        candidate_id = _extract_title_id(item.get("title_id") or "")
         if candidate_id and candidate_title == normalized_title:
+            _remember_chapter_title(chapter.get("chapter_id") or "", candidate_id)
             return candidate_id
 
-    for item in collected:
-        candidate_title = _normalize_text(item.get("title") or item.get("display_title") or "")
-        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
-        if candidate_id and normalized_title and (normalized_title in candidate_title or candidate_title in normalized_title):
-            return candidate_id
-
-    for item in collected:
-        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+    for item in candidates:
+        candidate_id = _extract_title_id(item.get("title_id") or "")
         if candidate_id:
+            _remember_chapter_title(chapter.get("chapter_id") or "", candidate_id)
             return candidate_id
 
     return ""
@@ -1593,7 +1563,7 @@ async def get_chapter_details(chapter_ref: str) -> dict[str, Any]:
     return await _dedup_fetch(cache_key, CHAPTER_TTL, _load)
 
 
-async def get_chapter_reader_payload(chapter_ref: str, lang: str | None = None) -> dict[str, Any]:
+async def get_chapter_reader_payload(chapter_ref: str, lang: str | None = None, title_hint: str = "") -> dict[str, Any]:
     resolved_lang = lang or PREFERRED_CHAPTER_LANG
     chapter_ref = _clean(chapter_ref)
     chapter_id = _extract_chapter_id(chapter_ref)
@@ -1602,9 +1572,10 @@ async def get_chapter_reader_payload(chapter_ref: str, lang: str | None = None) 
     async def _load():
         chapter = await get_chapter_details(chapter_ref)
         if not _extract_title_id(chapter.get("title_id")):
-            chapter["title_id"] = await _resolve_title_id_for_chapter(chapter)
+            chapter["title_id"] = await _resolve_title_id_for_chapter(chapter, title_hint)
         if not _extract_title_id(chapter.get("title_id")):
             raise RuntimeError("Nao consegui vincular esse capitulo a obra principal.")
+        _remember_chapter_title(chapter.get("chapter_id") or "", chapter.get("title_id") or "")
         chapter_payload = await get_chapter_list(
             chapter["title_id"],
             resolved_lang or chapter.get("chapter_language") or PREFERRED_CHAPTER_LANG,
@@ -1626,7 +1597,7 @@ async def get_chapter_reader_payload(chapter_ref: str, lang: str | None = None) 
     return await _dedup_fetch(cache_key, READER_TTL, _load)
 
 
-def get_cached_chapter_reader_payload(chapter_ref: str, lang: str | None = None) -> dict[str, Any] | None:
+def get_cached_chapter_reader_payload(chapter_ref: str, lang: str | None = None, title_hint: str = "") -> dict[str, Any] | None:
     resolved_lang = lang or PREFERRED_CHAPTER_LANG
     chapter_ref = _clean(chapter_ref)
     chapter_id = _extract_chapter_id(chapter_ref)
@@ -1634,6 +1605,8 @@ def get_cached_chapter_reader_payload(chapter_ref: str, lang: str | None = None)
     cached = _cache_get(cache_key, READER_TTL)
     if cached is None:
         return None
+    if title_hint:
+        _remember_chapter_title(chapter_id or chapter_ref, title_hint)
     return dict(cached)
 
 
@@ -1693,6 +1666,8 @@ async def get_recent_chapters(limit: int = AUTO_POST_LIMIT) -> list[dict[str, An
 
         if not chapter_id:
             continue
+
+        _remember_chapter_title(chapter_id, title_id)
 
         key = chapter_id
         if key in seen:
