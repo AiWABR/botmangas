@@ -34,7 +34,10 @@ def _extract_title_id(arg: str) -> str:
 def _extract_chapter_id(arg: str) -> str:
     for prefix in ("ch_", "cap_", "read_"):
         if arg.startswith(prefix):
-            return arg[len(prefix):]
+            raw = arg[len(prefix):]
+            if "_" in raw:
+                return raw.split("_", 1)[0].strip()
+            return raw.strip()
     return ""
 
 
