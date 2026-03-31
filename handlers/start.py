@@ -2,11 +2,11 @@ import asyncio
 import html
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL
+from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL, WEBAPP_BASE_URL
 from core.background import fire_and_forget_sync, run_sync
 from handlers.callbacks import send_chapter_panel, send_title_panel
 from services.catalog_client import get_cached_home_snapshot, schedule_warm_catalog_cache
@@ -165,9 +165,22 @@ async def _send_welcome(message, first_name: str) -> None:
         )
 
     for item in featured[:4]:
-        keyboard_rows.append(
-            [InlineKeyboardButton(f"📘 {item.get('title') or 'Manga'}", callback_data=f"mb|title|{item.get('title_id')}")]
-        )
+        title_id = str(item.get("title_id") or "").strip()
+        if title_id and WEBAPP_BASE_URL:
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"📘 {item.get('title') or 'Manga'}",
+                        web_app=WebAppInfo(
+                            url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}"
+                        ),
+                    )
+                ]
+            )
+        else:
+            keyboard_rows.append(
+                [InlineKeyboardButton(f"📘 {item.get('title') or 'Manga'}", callback_data=f"mb|title|{item.get('title_id')}")]
+            )
 
     text = (
              f"🎬 <b>Bem-vindo ao {BOT_BRAND}!</b>\n\n"
