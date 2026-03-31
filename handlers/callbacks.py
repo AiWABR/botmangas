@@ -193,7 +193,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
     rows.append([InlineKeyboardButton("📚 Lista de capitulos", callback_data=f"mb|chap|{title_id}|1")])
 
     if bundle.get("anilist_url"):
-        rows.append([InlineKeyboardButton("⭐ AniList", url=bundle["anilist_url"])])
+        rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
 
     return InlineKeyboardMarkup(rows)
 
