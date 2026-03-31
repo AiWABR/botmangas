@@ -2,12 +2,13 @@ import asyncio
 import html
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL, WEBAPP_BASE_URL
+from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL
 from core.background import fire_and_forget_sync, run_sync
+from handlers.callbacks import send_chapter_panel, send_title_panel
 from services.catalog_client import get_cached_home_snapshot, schedule_warm_catalog_cache
 from services.metrics import mark_user_seen
 from services.referral_db import (
@@ -117,14 +118,6 @@ def _queue_user_touch(user) -> None:
         mark_user_seen(user.id, user.username or user.first_name or "")
 
     fire_and_forget_sync(_runner)
-
-
-def _build_miniapp_title_url(title_id: str) -> str:
-    return f"{WEBAPP_BASE_URL.rstrip('/')}/miniapp/index.html?title={title_id}"
-
-
-def _build_miniapp_chapter_url(chapter_id: str) -> str:
-    return f"{WEBAPP_BASE_URL.rstrip('/')}/miniapp/index.html?chapter={chapter_id}"
 
 
 async def _safe_delete_message(message) -> None:
@@ -246,19 +239,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                 )
                 try:
-                    await _safe_delete_message(loading_msg)
-                    await message.reply_text(
-                        "⏳ <b>Abrindo seu mangá...</b>",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(
-                            [[
-                                InlineKeyboardButton(
-                                    "📱 Abrir mangá",
-                                    web_app=WebAppInfo(url=_build_miniapp_title_url(title_id)),
-                                )
-                            ]]
-                        ),
-                    )
+                    await send_title_panel(message, context, title_id, user.id, edit=False)
                 except asyncio.TimeoutError:
                     await _safe_delete_message(loading_msg)
                     await message.reply_text(
@@ -273,6 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 else:
+                    await _safe_delete_message(loading_msg)
                     return
 
             chapter_id = _extract_chapter_id(arg)
@@ -282,19 +264,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                 )
                 try:
-                    await _safe_delete_message(loading_msg)
-                    await message.reply_text(
-                        "⏳ <b>Abrindo seu capítulo...</b>",
-                        parse_mode="HTML",
-                        reply_markup=InlineKeyboardMarkup(
-                            [[
-                                InlineKeyboardButton(
-                                    "📱 Ler capítulo",
-                                    web_app=WebAppInfo(url=_build_miniapp_chapter_url(chapter_id)),
-                                )
-                            ]]
-                        ),
-                    )
+                    await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
                 except asyncio.TimeoutError:
                     await _safe_delete_message(loading_msg)
                     await message.reply_text(
@@ -309,6 +279,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 else:
+                    await _safe_delete_message(loading_msg)
                     return
 
             await _send_welcome(message, user.first_name or "leitor")
