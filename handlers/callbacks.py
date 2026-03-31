@@ -174,7 +174,6 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
         f"📚 <b>{title}</b>\n\n"
         f"{chr(10).join(meta)}\n"
         f"» <b>Generos:</b> <i>{genres_text}</i>\n\n"
-        f"💬 <i>{description}</i>\n\n"
         "✨ <i>Escolha abaixo como quer continuar.</i>"
     )
 
