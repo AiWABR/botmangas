@@ -165,22 +165,16 @@ async def _send_welcome(message, first_name: str) -> None:
         )
 
     for item in featured[:4]:
-        title_id = str(item.get("title_id") or "").strip()
-        if title_id and WEBAPP_BASE_URL:
-            keyboard_rows.append(
-                [
-                    InlineKeyboardButton(
-                        f"📘 {item.get('title') or 'Manga'}",
-                        web_app=WebAppInfo(
-                            url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}"
-                        ),
-                    )
-                ]
-            )
-        else:
-            keyboard_rows.append(
-                [InlineKeyboardButton(f"📘 {item.get('title') or 'Manga'}", callback_data=f"mb|title|{item.get('title_id')}")]
-            )
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    f"📘 {item.get('title') or 'Manga'}",
+                    web_app=WebAppInfo(
+                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={item.get('title_id')}"
+                    ),
+                )
+            ]
+        )
 
     text = (
              f"🎬 <b>Bem-vindo ao {BOT_BRAND}!</b>\n\n"
@@ -250,50 +244,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 loading_msg = await message.reply_text(
                     "⏳ <b>Abrindo seu mangá...</b>",
                     parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "📖 Abrir mangá",
+                                    web_app=WebAppInfo(
+                                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}"
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
-                try:
-                    await send_title_panel(message, context, title_id, user.id, edit=False)
-                except asyncio.TimeoutError:
-                    await _safe_delete_message(loading_msg)
-                    await message.reply_text(
-                        "⏳ Esse mangá demorou demais para abrir. Tente novamente em instantes."
-                    )
-                    return
-                except Exception as e:
-                    await _safe_delete_message(loading_msg)
-                    print("ERRO START TITLE:", repr(e))
-                    await message.reply_text(
-                        "❌ Não foi possível abrir esse mangá agora."
-                    )
-                    return
-                else:
-                    await _safe_delete_message(loading_msg)
-                    return
+                return
 
             chapter_id = _extract_chapter_id(arg)
             if chapter_id:
                 loading_msg = await message.reply_text(
                     "⏳ <b>Abrindo seu capítulo...</b>",
                     parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "📄 Ler capítulo",
+                                    web_app=WebAppInfo(
+                                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?chapter_id={chapter_id}"
+                                    ),
+                                )
+                            ]
+                        ]
+                    ),
                 )
-                try:
-                    await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
-                except asyncio.TimeoutError:
-                    await _safe_delete_message(loading_msg)
-                    await message.reply_text(
-                        "⏳ Esse capítulo demorou demais para abrir. Tente novamente em instantes."
-                    )
-                    return
-                except Exception as e:
-                    await _safe_delete_message(loading_msg)
-                    print("ERRO START CHAPTER:", repr(e))
-                    await message.reply_text(
-                        "❌ Não foi possível abrir esse capítulo agora."
-                    )
-                    return
-                else:
-                    await _safe_delete_message(loading_msg)
-                    return
+                return
 
             await _send_welcome(message, user.first_name or "leitor")
         finally:
