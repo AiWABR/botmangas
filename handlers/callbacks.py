@@ -123,8 +123,7 @@ async def _safe_answer_query(query, text: str | None = None, show_alert: bool = 
 
 def _pick_bundle_image(bundle: dict) -> str:
     return (
-        bundle.get("banner_url")
-        or bundle.get("cover_url")
+        bundle.get("cover_url")
         or bundle.get("background_url")
         or ""
     ).strip()
@@ -133,7 +132,7 @@ def _pick_bundle_image(bundle: dict) -> str:
 def _pick_chapter_image(chapter: dict) -> str:
     return (
         chapter.get("cover_url")
-        or chapter.get("banner_url")
+        or chapter.get("background_url")
         or ""
     ).strip()
 
@@ -337,11 +336,17 @@ async def _render_panel(target, text: str, keyboard: InlineKeyboardMarkup, photo
         except Exception:
             pass
         if photo:
-            return await target.message.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
+            try:
+                return await target.message.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
+            except Exception:
+                pass
         return await target.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
 
     if photo:
-        return await target.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
+        try:
+            return await target.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            pass
     return await target.reply_text(text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
 
 
@@ -575,7 +580,7 @@ async def _enqueue_pdf(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: st
             caption=(
                 f"📄 <b>{html.escape(chapter.get('title') or 'Manga')}</b>\n"
                 f"Capitulo <code>{html.escape(chapter.get('chapter_number') or '?')}</code>\n"
-                "Seu PDF esta sendo preparado."
+                "@MangasBrasil"
             ),
         ),
     )
