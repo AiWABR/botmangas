@@ -1,6 +1,7 @@
 import asyncio
 import html
 import time
+from urllib.parse import urlencode
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update, WebAppInfo
 from telegram.ext import ContextTypes
@@ -151,6 +152,30 @@ def _display_score(bundle: dict) -> str:
     return str(score)
 
 
+def _miniapp_url(title_id: str = "", chapter_id: str = "", page: str = "") -> str:
+    params: dict[str, str] = {}
+
+    if title_id:
+        tid = str(title_id)
+        params["title_id"] = tid
+        params["manga_id"] = tid
+        params["id"] = tid
+
+    if chapter_id:
+        cid = str(chapter_id)
+        params["chapter_id"] = cid
+        params["cap"] = cid
+        params["read"] = cid
+
+    if page:
+        pg = str(page)
+        params["page"] = pg
+        params["view"] = pg
+
+    query = urlencode(params)
+    return f"{WEBAPP_BASE_URL}/miniapp/index.html?{query}" if query else f"{WEBAPP_BASE_URL}/miniapp/index.html"
+
+
 def _title_text(bundle: dict, last_read: dict | None = None) -> str:
     title = html.escape(bundle.get("title") or "Manga")
     status = html.escape(bundle.get("status") or bundle.get("anilist_status") or "N/A")
@@ -188,7 +213,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
             InlineKeyboardButton(
                 "⏱ Continuar",
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}&chapter_id={last_read['chapter_id']}"
+                    url=_miniapp_url(title_id=title_id, chapter_id=last_read["chapter_id"])
                 ),
             )
         )
@@ -197,14 +222,23 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
             InlineKeyboardButton(
                 "🆕 Ultimo capitulo",
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}&chapter_id={latest_chapter['chapter_id']}"
+                    url=_miniapp_url(title_id=title_id, chapter_id=latest_chapter["chapter_id"])
                 ),
             )
         )
     if primary_row:
         rows.append(primary_row[:2])
 
-    rows.append([InlineKeyboardButton("📚 Lista de capitulos", callback_data=f"mb|chap|{title_id}|1")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "📚 Lista de capitulos",
+                web_app=WebAppInfo(
+                    url=_miniapp_url(title_id=title_id, page="chapters")
+                ),
+            )
+        ]
+    )
 
     if bundle.get("anilist_url"):
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
@@ -242,7 +276,10 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
             InlineKeyboardButton(
                 _chapter_button_label(item, read_ids),
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={bundle['title_id']}&chapter_id={item['chapter_id']}"
+                    url=_miniapp_url(
+                        title_id=bundle["title_id"],
+                        chapter_id=item["chapter_id"],
+                    )
                 ),
             )
         )
@@ -264,7 +301,16 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
     if nav:
         rows.append(nav)
 
-    rows.append([InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{bundle['title_id']}")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Voltar para a obra",
+                web_app=WebAppInfo(
+                    url=_miniapp_url(title_id=bundle["title_id"])
+                ),
+            )
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -291,7 +337,10 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
             InlineKeyboardButton(
                 "📰 Abrir leitura rapida" if telegraph_url else ("⏳ Preparando leitura rapida" if telegraph_pending else "📰 Leitura rapida"),
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['chapter_id']}"
+                    url=_miniapp_url(
+                        title_id=chapter["title_id"],
+                        chapter_id=chapter["chapter_id"],
+                    )
                 ),
             )
         ]
@@ -304,7 +353,10 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
             InlineKeyboardButton(
                 "⬅️ Anterior",
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['previous_chapter']['chapter_id']}"
+                    url=_miniapp_url(
+                        title_id=chapter["title_id"],
+                        chapter_id=chapter["previous_chapter"]["chapter_id"],
+                    )
                 ),
             )
         )
@@ -313,15 +365,36 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
             InlineKeyboardButton(
                 "Proximo ➡️",
                 web_app=WebAppInfo(
-                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['next_chapter']['chapter_id']}"
+                    url=_miniapp_url(
+                        title_id=chapter["title_id"],
+                        chapter_id=chapter["next_chapter"]["chapter_id"],
+                    )
                 ),
             )
         )
     if nav:
         rows.append(nav)
 
-    rows.append([InlineKeyboardButton("📚 Ver capitulos", callback_data=f"mb|chap|{chapter['title_id']}|1")])
-    rows.append([InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{chapter['title_id']}")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "📚 Ver capitulos",
+                web_app=WebAppInfo(
+                    url=_miniapp_url(title_id=chapter["title_id"], page="chapters")
+                ),
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Voltar para a obra",
+                web_app=WebAppInfo(
+                    url=_miniapp_url(title_id=chapter["title_id"])
+                ),
+            )
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
