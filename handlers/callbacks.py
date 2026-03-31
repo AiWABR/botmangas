@@ -6,9 +6,8 @@ from urllib.parse import urlencode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
-from core.background import fire_and_forget
+from core.background import fire_and_forget, fire_and_forget_sync, run_sync
 from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
-from core.background import fire_and_forget_sync, run_sync
 from core.pdf_queue import PdfJob, enqueue_pdf_job
 from handlers.search import edit_search_page, render_search_page
 from services.catalog_client import (
@@ -31,7 +30,7 @@ from services.metrics import (
 from services.telegraph_service import get_cached_chapter_page_url, get_or_create_chapter_page
 
 CALLBACK_COOLDOWN = 0.8
-TELEGRAPH_INLINE_WAIT = 1.6
+TELEGRAPH_INLINE_WAIT = 1.2  # levemente menor para não segurar botão por muito tempo
 
 _USER_CALLBACK_LOCKS: dict[int, asyncio.Lock] = {}
 _MESSAGE_EDIT_LOCKS: dict[str, asyncio.Lock] = {}
@@ -123,19 +122,11 @@ async def _safe_answer_query(query, text: str | None = None, show_alert: bool = 
 
 
 def _pick_bundle_image(bundle: dict) -> str:
-    return (
-        bundle.get("cover_url")
-        or bundle.get("background_url")
-        or ""
-    ).strip()
+    return (bundle.get("cover_url") or bundle.get("background_url") or "").strip()
 
 
 def _pick_chapter_image(chapter: dict) -> str:
-    return (
-        chapter.get("cover_url")
-        or chapter.get("background_url")
-        or ""
-    ).strip()
+    return (chapter.get("cover_url") or chapter.get("background_url") or "").strip()
 
 
 def _truncate(text: str, limit: int = 320) -> str:
@@ -152,28 +143,50 @@ def _display_score(bundle: dict) -> str:
     return str(score)
 
 
-def _miniapp_url(title_id: str = "", chapter_id: str = "", page: str = "") -> str:
-    params: dict[str, str] = {}
+def _miniapp_url(
+    *,
+    title_id: str = "",
+    chapter_id: str = "",
+    page: str = "",
+    source: str = "bot",
+) -> str:
+    """
+    URL canônica do miniapp.
+
+    Mantém aliases por compatibilidade, mas adiciona route/source,
+    que o frontend vai usar como verdade principal.
+    """
+    params: dict[str, str] = {"source": source}
 
     if title_id:
-        tid = str(title_id)
+        tid = str(title_id).strip()
         params["title_id"] = tid
         params["manga_id"] = tid
         params["id"] = tid
 
     if chapter_id:
-        cid = str(chapter_id)
+        cid = str(chapter_id).strip()
         params["chapter_id"] = cid
         params["cap"] = cid
         params["read"] = cid
 
     if page:
-        pg = str(page)
+        pg = str(page).strip()
         params["page"] = pg
         params["view"] = pg
 
+    # rota explícita para o frontend não precisar adivinhar
+    if chapter_id:
+        params["route"] = "reader"
+    elif title_id and page == "chapters":
+        params["route"] = "chapters"
+    elif title_id:
+        params["route"] = "detail"
+    else:
+        params["route"] = "home"
+
     query = urlencode(params)
-    return f"{WEBAPP_BASE_URL}/miniapp/index.html?{query}" if query else f"{WEBAPP_BASE_URL}/miniapp/index.html"
+    return f"{WEBAPP_BASE_URL.rstrip('/')}/miniapp/index.html?{query}"
 
 
 def _title_text(bundle: dict, last_read: dict | None = None) -> str:
@@ -183,7 +196,6 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
     score = _display_score(bundle)
     genres = bundle.get("genres") or []
     genres_text = html.escape(", ".join(str(item) for item in genres[:4])) if genres else "N/A"
-    description = html.escape(_truncate(bundle.get("description") or bundle.get("anilist_description") or "Sem descricao disponivel.", 220))
 
     meta = [
         f"» <b>Status:</b> <i>{status}</i>",
@@ -204,28 +216,37 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
 
 def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    title_id = bundle.get("title_id") or ""
+    title_id = str(bundle.get("title_id") or "").strip()
     latest_chapter = bundle.get("latest_chapter") or {}
 
-    primary_row = []
+    primary_row: list[InlineKeyboardButton] = []
+
     if last_read and last_read.get("chapter_id"):
         primary_row.append(
             InlineKeyboardButton(
                 "⏱ Continuar",
                 web_app=WebAppInfo(
-                    url=_miniapp_url(title_id=title_id, chapter_id=last_read["chapter_id"])
+                    url=_miniapp_url(
+                        title_id=title_id,
+                        chapter_id=last_read["chapter_id"],
+                    )
                 ),
             )
         )
+
     if latest_chapter.get("chapter_id"):
         primary_row.append(
             InlineKeyboardButton(
                 "🆕 Ultimo capitulo",
                 web_app=WebAppInfo(
-                    url=_miniapp_url(title_id=title_id, chapter_id=latest_chapter["chapter_id"])
+                    url=_miniapp_url(
+                        title_id=title_id,
+                        chapter_id=latest_chapter["chapter_id"],
+                    )
                 ),
             )
         )
+
     if primary_row:
         rows.append(primary_row[:2])
 
@@ -234,7 +255,10 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
             InlineKeyboardButton(
                 "📚 Lista de capitulos",
                 web_app=WebAppInfo(
-                    url=_miniapp_url(title_id=title_id, page="chapters")
+                    url=_miniapp_url(
+                        title_id=title_id,
+                        page="chapters",
+                    )
                 ),
             )
         ]
@@ -291,7 +315,7 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
 
     rows.append([InlineKeyboardButton(f"{page}/{total_pages}", callback_data="mb|noop")])
 
-    nav = []
+    nav: list[InlineKeyboardButton] = []
     if page > 1:
         nav.append(InlineKeyboardButton("⏪", callback_data=f"mb|chap|{bundle['title_id']}|1"))
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"mb|chap|{bundle['title_id']}|{page - 1}"))
@@ -347,7 +371,7 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
     )
     rows.append([InlineKeyboardButton("📄 Baixar PDF", callback_data=f"mb|pdf|{chapter['chapter_id']}")])
 
-    nav = []
+    nav: list[InlineKeyboardButton] = []
     if chapter.get("previous_chapter"):
         nav.append(
             InlineKeyboardButton(
@@ -398,164 +422,26 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
     return InlineKeyboardMarkup(rows)
 
 
-def _loading_keyboard(label: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="mb|noop")]])
-
-
-async def _show_loading_markup(query, label: str) -> None:
-    try:
-        await query.edit_message_reply_markup(reply_markup=_loading_keyboard(label))
-    except Exception:
-        pass
-
-
-async def _restore_reply_markup(query, reply_markup) -> None:
-    if reply_markup is None:
-        return
-    try:
-        await query.edit_message_reply_markup(reply_markup=reply_markup)
-    except Exception:
-        pass
-
-
-async def _render_panel(target, text: str, keyboard: InlineKeyboardMarkup, photo: str = "", *, edit: bool):
-    if edit:
-        if photo:
-            media = InputMediaPhoto(media=photo, caption=text, parse_mode="HTML")
-            try:
-                await target.edit_message_media(media=media, reply_markup=keyboard)
-                return target.message
-            except Exception:
-                pass
-        try:
-            await target.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=keyboard)
-            return target.message
-        except Exception:
-            pass
-        try:
-            await target.edit_message_text(
-                text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-            )
-            return target.message
-        except Exception:
-            pass
-        if photo:
-            try:
-                return await target.message.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
-            except Exception:
-                pass
-        return await target.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
-
-    if photo:
-        try:
-            return await target.reply_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=keyboard)
-        except Exception:
-            pass
-    return await target.reply_text(text, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
-
-
-async def _render_panel_to_message(
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    chat_id: int,
-    message_id: int,
-    text: str,
-    keyboard: InlineKeyboardMarkup,
-    photo: str = "",
-) -> None:
-    bot = context.bot
-
-    if photo:
-        media = InputMediaPhoto(media=photo, caption=text, parse_mode="HTML")
-        try:
-            await bot.edit_message_media(chat_id=chat_id, message_id=message_id, media=media, reply_markup=keyboard)
-            return
-        except Exception:
-            pass
-
-    try:
-        await bot.edit_message_caption(
-            chat_id=chat_id,
-            message_id=message_id,
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-        return
-    except Exception:
-        pass
-
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        pass
-
-
-def _chapter_telegraph_title(chapter: dict) -> str:
-    return f"{chapter.get('title') or 'Manga'} - Capitulo {chapter.get('chapter_number') or '?'}"
-
-
-async def _auto_finalize_telegraph_panel(
-    context: ContextTypes.DEFAULT_TYPE,
-    panel_message,
-    chapter: dict,
-    telegraph_task: asyncio.Task,
-) -> None:
-    if not panel_message:
-        return
-
-    try:
-        url = await telegraph_task
-    except Exception:
-        return
-
-    chat_id = getattr(getattr(panel_message, "chat", None), "id", None)
-    message_id = getattr(panel_message, "message_id", None)
-    if chat_id is None or message_id is None:
-        return
-
-    async with _message_lock(chat_id, message_id):
-        kind, ref = _get_panel_state(chat_id, message_id)
-        if kind != "chapter" or ref != (chapter.get("chapter_id") or ""):
-            return
-
-        await _render_panel_to_message(
-            context,
-            chat_id=chat_id,
-            message_id=message_id,
-            text=_chapter_text(chapter),
-            keyboard=_chapter_keyboard(chapter, telegraph_url=url),
-            photo=_pick_chapter_image(chapter),
-        )
-
-
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     bundle = get_cached_title_bundle(title_id) or get_cached_title_overview(title_id)
     if bundle is None:
         bundle = await get_title_overview(title_id)
 
+    # aquece bundle completo sem segurar resposta
+    fire_and_forget(get_title_bundle(title_id))
+
     last_read = await run_sync(get_last_read_entry, user_id, bundle["title_id"]) if user_id else None
 
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+    latest = bundle.get("latest_chapter") or {}
+
+    # pré-carrega o bundle e alguns capítulos vizinhos
     if not bundle.get("chapters"):
         prefetch_title_bundles([title_id], limit=1)
     else:
-        latest = bundle.get("latest_chapter") or {}
         chapter_ids = [latest.get("chapter_id") or ""]
-        chapter_ids.extend(
-            item.get("chapter_id") or ""
-            for item in flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)[:2]
-        )
-        prefetch_reader_payloads(chapter_ids, limit=3)
+        chapter_ids.extend(item.get("chapter_id") or "" for item in chapters[:3])
+        prefetch_reader_payloads(chapter_ids, limit=4)
 
     if user_id:
         fire_and_forget_sync(
@@ -578,12 +464,22 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 
 
 async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, page: int, user_id: int | None, *, edit: bool):
-    bundle = get_cached_title_bundle(title_id) or await get_title_bundle(title_id)
+    # tenta cache forte primeiro
+    bundle = get_cached_title_bundle(title_id)
+    if bundle is None:
+        bundle = await get_title_bundle(title_id)
+
     chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
     read_ids = set(await run_sync(get_read_chapter_ids, user_id, bundle["title_id"])) if user_id else set()
 
     total_pages = max(1, ((len(chapters) - 1) // CHAPTERS_PER_PAGE) + 1)
     page = max(1, min(page, total_pages))
+
+    # aquece payloads dos capítulos visíveis para o próximo clique ser instantâneo
+    start = (page - 1) * CHAPTERS_PER_PAGE
+    end = min(start + CHAPTERS_PER_PAGE, len(chapters))
+    visible_ids = [(item.get("chapter_id") or "") for item in chapters[start:end]]
+    prefetch_reader_payloads(visible_ids, limit=len(visible_ids))
 
     panel_message = await _render_panel(
         target,
@@ -598,11 +494,15 @@ async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_i
 
 async def send_chapter_panel(target, context: ContextTypes.DEFAULT_TYPE, chapter_id: str, user_id: int | None, *, edit: bool):
     chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+
     adjacent_refs = [
         (chapter.get("previous_chapter") or {}).get("chapter_id") or "",
         (chapter.get("next_chapter") or {}).get("chapter_id") or "",
     ]
     prefetch_reader_payloads(adjacent_refs, limit=2)
+
+    # aquece título em background para botão "Ver capítulos" abrir muito rápido
+    fire_and_forget(get_title_bundle(chapter["title_id"]))
 
     if user_id:
         fire_and_forget_sync(
@@ -631,7 +531,7 @@ async def send_chapter_panel(target, context: ContextTypes.DEFAULT_TYPE, chapter
         telegraph_task = asyncio.create_task(
             get_or_create_chapter_page(
                 chapter_id=chapter["chapter_id"],
-                title=_chapter_telegraph_title(chapter),
+                title=f"{chapter.get('title') or 'Manga'} - Capitulo {chapter.get('chapter_number') or '?'}",
                 images=chapter.get("images") or [],
             )
         )
@@ -651,159 +551,3 @@ async def send_chapter_panel(target, context: ContextTypes.DEFAULT_TYPE, chapter
     )
     if panel_message:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "chapter", chapter["chapter_id"])
-
-    if panel_message and not telegraph_url and telegraph_task is not None:
-        fire_and_forget(_auto_finalize_telegraph_panel(context, panel_message, chapter, telegraph_task))
-
-
-async def _send_telegraph(query, chapter_id: str):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
-    url = await get_or_create_chapter_page(
-        chapter_id=chapter["chapter_id"],
-        title=_chapter_telegraph_title(chapter),
-        images=chapter.get("images") or [],
-    )
-    panel_message = await _render_panel(
-        query,
-        _chapter_text(chapter),
-        _chapter_keyboard(chapter, telegraph_url=url),
-        _pick_chapter_image(chapter),
-        edit=True,
-    )
-    if panel_message:
-        _set_panel_state(panel_message.chat.id, panel_message.message_id, "chapter", chapter["chapter_id"])
-
-
-async def _enqueue_pdf(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: str):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
-    await enqueue_pdf_job(
-        context.application,
-        PdfJob(
-            chat_id=query.message.chat_id,
-            chapter_id=chapter["chapter_id"],
-            chapter_number=chapter.get("chapter_number") or "",
-            title_name=chapter.get("title") or "Manga",
-            images=chapter.get("images") or [],
-            caption=(
-                f"📄 <b>{html.escape(chapter.get('title') or 'Manga')}</b>\n"
-                f"Capitulo <code>{html.escape(chapter.get('chapter_number') or '?')}</code>\n"
-                "@MangasBrasil"
-            ),
-        ),
-    )
-    return chapter
-
-
-async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-
-    if not query or not query.data:
-        return
-    if not query.data.startswith("mb|"):
-        return
-
-    if query.data == "mb|noop":
-        await _safe_answer_query(query)
-        return
-
-    if not user:
-        await _safe_answer_query(query, "Nao consegui identificar seu usuario agora.", show_alert=True)
-        return
-
-    if _is_callback_cooldown(context, user.id, query.data):
-        await _safe_answer_query(query, "⏳ Aguarde um instante antes de apertar de novo.", show_alert=False)
-        return
-
-    message = query.message
-    user_lock = _user_lock(user.id)
-    msg_lock = _message_lock(message.chat.id, message.message_id) if message else asyncio.Lock()
-
-    current_action = _action_signature(query.data)
-    if message and _get_inflight_action(message.chat.id, message.message_id) == current_action:
-        await _safe_answer_query(query, "⏳ Essa acao ja esta sendo processada...", show_alert=False)
-        return
-
-    parts = query.data.split("|")
-    action = parts[1] if len(parts) > 1 else ""
-    user_id = user.id
-    original_reply_markup = getattr(message, "reply_markup", None)
-
-    async with user_lock:
-        async with msg_lock:
-            if message:
-                if _get_inflight_action(message.chat.id, message.message_id) == current_action:
-                    await _safe_answer_query(query, "⏳ Essa acao ja esta sendo processada...", show_alert=False)
-                    return
-                _set_inflight_action(message.chat.id, message.message_id, current_action)
-
-            try:
-                if action == "title" and len(parts) >= 3:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Abrindo obra")
-                    await send_title_panel(query, context, parts[2], user_id, edit=True)
-                    return
-
-                if action == "chap" and len(parts) >= 4:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Carregando capitulos")
-                    await send_chapters_page(query, context, parts[2], int(parts[3]), user_id, edit=True)
-                    return
-
-                if action == "read" and len(parts) >= 3:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Abrindo capitulo")
-                    await send_chapter_panel(query, context, parts[2], user_id, edit=True)
-                    return
-
-                if action == "sp" and len(parts) >= 4:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Carregando pagina")
-                    rendered = render_search_page(context, parts[2], int(parts[3]))
-                    if not rendered:
-                        await _safe_answer_query(query, "Essa busca expirou. Faz outra busca pra continuar.", show_alert=True)
-                        return
-                    await edit_search_page(query, rendered)
-                    return
-
-                if action == "tg" and len(parts) >= 3:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Preparando leitura rapida")
-                    await _send_telegraph(query, parts[2])
-                    return
-
-                if action == "pdf" and len(parts) >= 3:
-                    await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Preparando PDF")
-                    chapter = await _enqueue_pdf(query, context, parts[2])
-                    await _render_panel(
-                        query,
-                        _chapter_text(chapter),
-                        _chapter_keyboard(
-                            chapter,
-                            telegraph_url=get_cached_chapter_page_url(chapter["chapter_id"]),
-                            telegraph_pending=not bool(get_cached_chapter_page_url(chapter["chapter_id"])),
-                        ),
-                        _pick_chapter_image(chapter),
-                        edit=True,
-                    )
-                    return
-
-                await _safe_answer_query(query, "Acao desconhecida.", show_alert=True)
-            except asyncio.TimeoutError:
-                await _restore_reply_markup(query, original_reply_markup)
-                await _safe_answer_query(query, "⏳ Demorou demais para carregar. Tente de novo.", show_alert=True)
-            except Exception as error:
-                print("ERRO CALLBACK MANGA:", repr(error))
-                await _restore_reply_markup(query, original_reply_markup)
-                await _safe_answer_query(query, "Nao consegui concluir essa acao agora.", show_alert=True)
-                try:
-                    await query.message.reply_text(
-                        "❌ Nao consegui concluir essa acao agora.\n\nTente novamente em instantes.",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-            finally:
-                if message:
-                    _clear_inflight_action(message.chat.id, message.message_id)
