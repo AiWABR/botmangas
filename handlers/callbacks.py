@@ -2,11 +2,11 @@ import asyncio
 import html
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
 from core.background import fire_and_forget
-from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG
+from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
 from core.background import fire_and_forget_sync, run_sync
 from core.pdf_queue import PdfJob, enqueue_pdf_job
 from handlers.search import edit_search_page, render_search_page
@@ -184,9 +184,23 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
 
     primary_row = []
     if last_read and last_read.get("chapter_id"):
-        primary_row.append(InlineKeyboardButton("⏱ Continuar", callback_data=f"mb|read|{last_read['chapter_id']}"))
+        primary_row.append(
+            InlineKeyboardButton(
+                "⏱ Continuar",
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}&chapter_id={last_read['chapter_id']}"
+                ),
+            )
+        )
     if latest_chapter.get("chapter_id"):
-        primary_row.append(InlineKeyboardButton("🆕 Ultimo capitulo", callback_data=f"mb|read|{latest_chapter['chapter_id']}"))
+        primary_row.append(
+            InlineKeyboardButton(
+                "🆕 Ultimo capitulo",
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}&chapter_id={latest_chapter['chapter_id']}"
+                ),
+            )
+        )
     if primary_row:
         rows.append(primary_row[:2])
 
@@ -227,7 +241,9 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
         line.append(
             InlineKeyboardButton(
                 _chapter_button_label(item, read_ids),
-                callback_data=f"mb|read|{item['chapter_id']}",
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={bundle['title_id']}&chapter_id={item['chapter_id']}"
+                ),
             )
         )
         if len(line) == 3:
@@ -270,19 +286,37 @@ def _chapter_text(chapter: dict) -> str:
 def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pending: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    if telegraph_url:
-        rows.append([InlineKeyboardButton("📰 Abrir leitura rapida", url=telegraph_url)])
-    elif telegraph_pending:
-        rows.append([InlineKeyboardButton("⏳ Preparando leitura rapida", callback_data="mb|noop")])
-    else:
-        rows.append([InlineKeyboardButton("📰 Leitura rapida", callback_data=f"mb|tg|{chapter['chapter_id']}")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "📰 Abrir leitura rapida" if telegraph_url else ("⏳ Preparando leitura rapida" if telegraph_pending else "📰 Leitura rapida"),
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['chapter_id']}"
+                ),
+            )
+        ]
+    )
     rows.append([InlineKeyboardButton("📄 Baixar PDF", callback_data=f"mb|pdf|{chapter['chapter_id']}")])
 
     nav = []
     if chapter.get("previous_chapter"):
-        nav.append(InlineKeyboardButton("⬅️ Anterior", callback_data=f"mb|read|{chapter['previous_chapter']['chapter_id']}"))
+        nav.append(
+            InlineKeyboardButton(
+                "⬅️ Anterior",
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['previous_chapter']['chapter_id']}"
+                ),
+            )
+        )
     if chapter.get("next_chapter"):
-        nav.append(InlineKeyboardButton("Proximo ➡️", callback_data=f"mb|read|{chapter['next_chapter']['chapter_id']}"))
+        nav.append(
+            InlineKeyboardButton(
+                "Proximo ➡️",
+                web_app=WebAppInfo(
+                    url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={chapter['title_id']}&chapter_id={chapter['next_chapter']['chapter_id']}"
+                ),
+            )
+        )
     if nav:
         rows.append(nav)
 
