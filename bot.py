@@ -19,7 +19,7 @@ from handlers.broadcast import (
     broadcast_command,
     broadcast_message_router,
 )
-from handlers.callbacks import callbacks
+
 from handlers.help import ajuda
 from handlers.inline import inline_query
 from handlers.metricas import metricas, metricas_limpar
