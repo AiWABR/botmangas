@@ -231,13 +231,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             title_id = _extract_title_id(arg)
             if title_id:
-                await send_title_panel(message, context, title_id, user.id, edit=False)
-                return
+                loading_msg = await message.reply_text(
+                    "⏳ <b>Abrindo seu mangá...</b>",
+                    parse_mode="HTML",
+                )
+                try:
+                    await send_title_panel(message, context, title_id, user.id, edit=False)
+                except asyncio.TimeoutError:
+                    await _safe_delete_message(loading_msg)
+                    await message.reply_text(
+                        "⏳ Esse mangá demorou demais para abrir. Tente novamente em instantes."
+                    )
+                    return
+                except Exception as e:
+                    await _safe_delete_message(loading_msg)
+                    print("ERRO START TITLE:", repr(e))
+                    await message.reply_text(
+                        "❌ Não foi possível abrir esse mangá agora."
+                    )
+                    return
+                else:
+                    await _safe_delete_message(loading_msg)
+                    return
 
             chapter_id = _extract_chapter_id(arg)
             if chapter_id:
-                await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
-                return
+                loading_msg = await message.reply_text(
+                    "⏳ <b>Abrindo seu capítulo...</b>",
+                    parse_mode="HTML",
+                )
+                try:
+                    await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
+                except asyncio.TimeoutError:
+                    await _safe_delete_message(loading_msg)
+                    await message.reply_text(
+                        "⏳ Esse capítulo demorou demais para abrir. Tente novamente em instantes."
+                    )
+                    return
+                except Exception as e:
+                    await _safe_delete_message(loading_msg)
+                    print("ERRO START CHAPTER:", repr(e))
+                    await message.reply_text(
+                        "❌ Não foi possível abrir esse capítulo agora."
+                    )
+                    return
+                else:
+                    await _safe_delete_message(loading_msg)
+                    return
 
             await _send_welcome(message, user.first_name or "leitor")
         finally:
