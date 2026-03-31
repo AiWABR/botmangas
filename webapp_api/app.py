@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import BASE_DIR, DATA_DIR, HOME_SECTION_LIMIT, PREFERRED_CHAPTER_LANG
 from services.catalog_client import (
@@ -29,8 +31,8 @@ PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
 
 app = FastAPI(
     title="Mangas Baltigo API",
-    description="API do miniapp de mangas com catalogo, capitulos e leitor",
-    version="1.1.0",
+    description="API otimizada do miniapp de mangás",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -43,14 +45,108 @@ app.add_middleware(
 
 
 class ProgressPayload(BaseModel):
-    user_id: str
-    title_id: str
+    user_id: str = Field(min_length=1)
+    title_id: str = Field(min_length=1)
     title_name: str = ""
-    chapter_id: str
+    chapter_id: str = Field(min_length=1)
     chapter_number: str = ""
     chapter_url: str = ""
     page_index: int = 0
     total_pages: int = 0
+
+
+_CACHE: dict[str, dict[str, Any]] = {}
+_CACHE_LOCK = asyncio.Lock()
+_RECENT_TTL = 20
+_HOME_TTL = 25
+_TITLE_TTL = 90
+_CHAPTER_TTL = 90
+_SECTIONS_TTL = 25
+_SEARCH_TTL = 20
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _cache_key(namespace: str, **kwargs: Any) -> str:
+    raw = json.dumps({"ns": namespace, **kwargs}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+async def _cache_get(namespace: str, ttl: int, **kwargs: Any) -> Any | None:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if not entry:
+            return None
+        if entry["expires_at"] < _now():
+            _CACHE.pop(key, None)
+            return None
+        return entry["value"]
+
+
+async def _cache_set(namespace: str, value: Any, ttl: int, **kwargs: Any) -> Any:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        _CACHE[key] = {
+            "value": value,
+            "expires_at": _now() + ttl,
+        }
+    return value
+
+
+async def _cached(namespace: str, ttl: int, producer, **kwargs: Any) -> Any:
+    cached = await _cache_get(namespace, ttl, **kwargs)
+    if cached is not None:
+        return cached
+    value = await producer()
+    return await _cache_set(namespace, value, ttl, **kwargs)
+
+
+async def _stale_while_revalidate(namespace: str, ttl: int, stale_ttl: int, producer, **kwargs: Any) -> Any:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry and entry["soft_expires_at"] >= _now():
+            return entry["value"]
+        if entry and entry["hard_expires_at"] >= _now():
+            if not entry.get("refreshing"):
+                entry["refreshing"] = True
+                asyncio.create_task(_refresh_cache_entry(key, producer, ttl, stale_ttl))
+            return entry["value"]
+
+    value = await producer()
+    async with _CACHE_LOCK:
+        _CACHE[key] = {
+            "value": value,
+            "soft_expires_at": _now() + ttl,
+            "hard_expires_at": _now() + stale_ttl,
+            "refreshing": False,
+        }
+    return value
+
+
+async def _refresh_cache_entry(key: str, producer, ttl: int, stale_ttl: int) -> None:
+    try:
+        value = await producer()
+        async with _CACHE_LOCK:
+            _CACHE[key] = {
+                "value": value,
+                "soft_expires_at": _now() + ttl,
+                "hard_expires_at": _now() + stale_ttl,
+                "refreshing": False,
+            }
+    except Exception:
+        async with _CACHE_LOCK:
+            if key in _CACHE:
+                _CACHE[key]["refreshing"] = False
+
+
+async def _invalidate_prefix(namespace: str) -> None:
+    async with _CACHE_LOCK:
+        for key in list(_CACHE.keys()):
+            _CACHE.pop(key, None)
 
 
 def _load_progress() -> dict[str, dict[str, Any]]:
@@ -80,6 +176,8 @@ def _public_last_read(entry: dict[str, Any] | None) -> dict[str, Any] | None:
         "chapter_id": entry.get("chapter_id") or "",
         "chapter_number": entry.get("chapter_number") or "",
         "updated_at": entry.get("updated_at") or "",
+        "page_index": int(entry.get("page_index") or 0),
+        "total_pages": int(entry.get("total_pages") or 0),
     }
 
 
@@ -96,31 +194,58 @@ def _public_chapter(item: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _has_real_chapter(item: dict[str, Any]) -> bool:
+    return bool((item.get("chapter_id") or "").strip())
+
+
 def _public_title_item(item: dict[str, Any]) -> dict[str, Any]:
+    latest_value = item.get("latest_chapter")
+    if isinstance(latest_value, dict):
+        latest_value = latest_value.get("chapter_number") or latest_value.get("chapter_id") or ""
+
     return {
         "title_id": item.get("title_id") or "",
         "chapter_id": item.get("chapter_id") or "",
-        "title": item.get("title") or "",
+        "title": item.get("display_title") or item.get("title") or "",
         "cover_url": item.get("cover_url") or "",
-        "background_url": item.get("background_url") or "",
+        "background_url": item.get("background_url") or item.get("cover_url") or "",
         "status": item.get("status") or "",
         "rating": item.get("rating") or "",
         "updated_at": item.get("updated_at") or "",
-        "latest_chapter": item.get("latest_chapter") or "",
+        "latest_chapter": latest_value or "",
+        "chapter_number": item.get("chapter_number") or latest_value or "",
         "adult": bool(item.get("adult")),
     }
 
 
+def _sorted_filtered_chapters(bundle: dict[str, Any], lang: str) -> list[dict[str, Any]]:
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
+    clean = [c for c in chapters if _has_real_chapter(c)]
+
+    def chapter_sort(item: dict[str, Any]) -> tuple[float, str]:
+        raw = str(item.get("chapter_number") or "").strip()
+        try:
+            return (float(raw), item.get("updated_at") or "")
+        except Exception:
+            return (-1.0, item.get("updated_at") or "")
+
+    clean.sort(key=chapter_sort, reverse=True)
+    return clean
+
+
 def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
+    chapters = _sorted_filtered_chapters(bundle, lang)
+    latest = next((item for item in chapters if item.get("chapter_id")), None)
+
     return {
         "title_id": bundle.get("title_id") or "",
-        "title": bundle.get("title") or "",
+        "title": bundle.get("display_title") or bundle.get("title") or "",
         "preferred_title": bundle.get("preferred_title") or "",
         "alt_titles": bundle.get("alt_titles") or [],
         "description": bundle.get("description") or bundle.get("anilist_description") or "",
         "cover_url": bundle.get("cover_url") or "",
-        "background_url": bundle.get("background_url") or "",
-        "banner_url": bundle.get("banner_url") or bundle.get("background_url") or "",
+        "background_url": bundle.get("background_url") or bundle.get("cover_url") or "",
+        "banner_url": bundle.get("banner_url") or bundle.get("background_url") or bundle.get("cover_url") or "",
         "cover_color": bundle.get("cover_color") or "",
         "status": bundle.get("status") or bundle.get("anilist_status") or "",
         "rating": bundle.get("rating") or "",
@@ -128,19 +253,21 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "authors": bundle.get("authors") or [],
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
-        "total_chapters": bundle.get("total_chapters") or 0,
+        "total_chapters": len(chapters),
         "anilist_url": bundle.get("anilist_url") or "",
         "anilist_score": bundle.get("anilist_score") or 0,
         "anilist_format": bundle.get("anilist_format") or "",
         "anilist_status": bundle.get("anilist_status") or "",
         "anilist_chapters": bundle.get("anilist_chapters") or 0,
         "anilist_volumes": bundle.get("anilist_volumes") or 0,
-        "chapters": [_public_chapter(item) for item in flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)],
-        "latest_chapter": _public_chapter(bundle.get("latest_chapter")),
+        "adult": bool(bundle.get("adult")),
+        "chapters": [_public_chapter(item) for item in chapters],
+        "latest_chapter": _public_chapter(latest or bundle.get("latest_chapter")),
     }
 
 
 def _public_reader_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    images = [img for img in (payload.get("images") or []) if str(img or "").strip()]
     return {
         "title_id": payload.get("title_id") or "",
         "title": payload.get("title") or "",
@@ -149,89 +276,239 @@ def _public_reader_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "chapter_language": payload.get("chapter_language") or "",
         "chapter_volume": payload.get("chapter_volume") or "",
         "cover_url": payload.get("cover_url") or "",
-        "image_count": payload.get("image_count") or 0,
-        "images": payload.get("images") or [],
+        "image_count": len(images),
+        "images": images,
         "total_chapters": payload.get("total_chapters") or 0,
         "previous_chapter": _public_chapter(payload.get("previous_chapter")),
         "next_chapter": _public_chapter(payload.get("next_chapter")),
     }
 
 
+def _normalize_query(text: str) -> str:
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", (text or "").strip().lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _search_score(query: str, item: dict[str, Any]) -> tuple[int, int, int]:
+    q = _normalize_query(query)
+    title = _normalize_query(item.get("title") or item.get("preferred_title") or item.get("display_title") or "")
+    tags = [_normalize_query(tag) for tag in (item.get("genres") or [])]
+
+    if not q:
+        return (0, 0, 0)
+    if title == q:
+        return (500, 0, -len(title))
+    if title.startswith(q):
+        return (400, 0, -len(title))
+    if q in title:
+        return (300, 0, -len(title))
+    if any(q in tag for tag in tags):
+        return (220, 0, -len(title))
+
+    overlap = len(set(q.split()) & set(title.split()))
+    return (100 + overlap * 10, 0, -len(title))
+
+
+async def _search_with_suggestions(query: str, limit: int) -> dict[str, Any]:
+    raw_results = await _cached(
+        "search",
+        _SEARCH_TTL,
+        lambda: search_titles(query, limit=max(20, limit * 3)),
+        query=query,
+        limit=max(20, limit * 3),
+    )
+
+    candidates = []
+    for item in raw_results:
+        if not item.get("title_id"):
+            continue
+        candidates.append(item)
+
+    ranked = sorted(candidates, key=lambda item: _search_score(query, item), reverse=True)
+    ranked = ranked[:limit]
+
+    if ranked:
+        return {
+            "query": query,
+            "results": [_public_title_item(item) for item in ranked],
+            "suggestions": [],
+        }
+
+    home = await _home_payload(limit=max(10, limit))
+    pool = []
+    for key in ("featured", "popular", "recent_titles", "latest_titles"):
+        pool.extend(home.get(key) or [])
+
+    seen: set[str] = set()
+    dedup_pool = []
+    for item in pool:
+        title_id = item.get("title_id") or ""
+        if not title_id or title_id in seen:
+            continue
+        seen.add(title_id)
+        dedup_pool.append(item)
+
+    suggestions = sorted(dedup_pool, key=lambda item: _search_score(query, item), reverse=True)[:6]
+    return {
+        "query": query,
+        "results": [],
+        "suggestions": [_public_title_item(item) for item in suggestions if item.get("title_id")],
+    }
+
+
+async def _home_payload(limit: int) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        payload, recent_chapters = await asyncio.gather(
+            get_home_payload(limit=limit),
+            get_recent_chapters(limit=min(limit * 2, 24)),
+        )
+
+        featured = [_public_title_item(item) for item in (payload.get("featured") or []) if _has_real_chapter(item)]
+        popular = [_public_title_item(item) for item in (payload.get("popular") or []) if _has_real_chapter(item)]
+        recent_titles = [_public_title_item(item) for item in (payload.get("recent_titles") or []) if _has_real_chapter(item)]
+        latest_titles = [_public_title_item(item) for item in (payload.get("latest_titles") or []) if _has_real_chapter(item)]
+
+        public_recent_chapters = []
+        seen_chapters: set[str] = set()
+        for item in recent_chapters:
+            chapter_id = item.get("chapter_id") or ""
+            if not chapter_id or chapter_id in seen_chapters:
+                continue
+            seen_chapters.add(chapter_id)
+            public_recent_chapters.append(_public_title_item(item))
+
+        latest_titles.sort(
+            key=lambda item: (item.get("updated_at") or "", item.get("latest_chapter") or ""),
+            reverse=True,
+        )
+        public_recent_chapters.sort(
+            key=lambda item: (
+                item.get("updated_at") or "",
+                item.get("chapter_number") or item.get("latest_chapter") or "",
+            ),
+            reverse=True,
+        )
+
+        return {
+            "featured": featured[:limit],
+            "popular": popular[:limit],
+            "recent_titles": recent_titles[:limit],
+            "latest_titles": latest_titles[:limit],
+            "recent_chapters": public_recent_chapters[: max(limit, 12)],
+        }
+
+    return await _stale_while_revalidate("home", _HOME_TTL, _HOME_TTL * 3, producer, limit=limit)
+
+
+async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        bundle = await get_title_bundle(title_id, lang)
+        public_bundle = _public_title_bundle(bundle, lang)
+        if user_id:
+            public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
+        return public_bundle
+
+    return await _cached("title", _TITLE_TTL, producer, title_id=title_id, lang=lang, user_id=user_id)
+
+
+async def _chapter_payload(chapter_id: str, lang: str) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        payload = await get_chapter_reader_payload(chapter_id, lang)
+        return _public_reader_payload(payload)
+
+    return await _cached("chapter", _CHAPTER_TTL, producer, chapter_id=chapter_id, lang=lang)
+
+
 @app.get("/api/ping")
-async def ping():
+async def ping() -> dict[str, bool]:
     return {"ok": True}
 
 
 @app.get("/api/home")
-async def api_home(limit: int = Query(HOME_SECTION_LIMIT, ge=4, le=20)):
-    payload, recent_chapters = await asyncio.gather(
-        get_home_payload(limit=limit),
-        get_recent_chapters(limit=min(limit, 10)),
-    )
-    return {
-        "featured": [_public_title_item(item) for item in (payload.get("featured") or [])],
-        "popular": [_public_title_item(item) for item in (payload.get("popular") or [])],
-        "recent_titles": [_public_title_item(item) for item in (payload.get("recent_titles") or [])],
-        "latest_titles": [_public_title_item(item) for item in (payload.get("latest_titles") or [])],
-        "recent_chapters": [_public_title_item(item) for item in recent_chapters],
-    }
+async def api_home(limit: int = Query(HOME_SECTION_LIMIT, ge=4, le=24)):
+    return await _home_payload(limit=limit)
 
 
 @app.get("/api/search")
-async def api_search(q: str = Query("", min_length=1), limit: int = Query(10, ge=1, le=20)):
-    return {"query": q, "results": [_public_title_item(item) for item in await search_titles(q, limit=limit)]}
+async def api_search(q: str = Query("", min_length=1), limit: int = Query(12, ge=1, le=24)):
+    return await _search_with_suggestions(q, limit)
 
 
 @app.get("/api/sections/{section_name}")
-async def api_section(section_name: str, limit: int = Query(12, ge=1, le=20)):
-    if section_name == "recent_chapters":
-        return {"items": [_public_title_item(item) for item in await get_recent_chapters(limit=limit)]}
+async def api_section(section_name: str, limit: int = Query(12, ge=1, le=24)):
+    async def producer() -> dict[str, Any]:
+        if section_name == "recent_chapters":
+            items = await get_recent_chapters(limit=max(limit, 12))
+            clean = [_public_title_item(item) for item in items if _has_real_chapter(item)]
+            clean.sort(
+                key=lambda item: (
+                    item.get("updated_at") or "",
+                    item.get("chapter_number") or item.get("latest_chapter") or "",
+                ),
+                reverse=True,
+            )
+            return {"items": clean[:limit]}
 
-    section_map = {
-        "featured": "getFeatured",
-        "popular": "getPopular",
-        "recent_titles": "getRecentRead",
-        "latest_titles": "getLatestTable",
-    }
-    search_type = section_map.get(section_name)
-    if not search_type:
-        raise HTTPException(status_code=404, detail="Secao nao encontrada.")
-    extra = {"search_time": "week"} if search_type == "getRecentRead" else {}
-    items = await get_title_search(search_type, limit=limit, **extra)
-    return {"items": [_public_title_item(item) for item in items]}
+        section_map = {
+            "featured": "getFeatured",
+            "popular": "getPopular",
+            "recent_titles": "getRecentRead",
+            "latest_titles": "getLatestTable",
+        }
+        search_type = section_map.get(section_name)
+        if not search_type:
+            raise HTTPException(status_code=404, detail="Secao nao encontrada.")
+
+        extra = {"search_time": "week"} if search_type == "getRecentRead" else {}
+        items = await get_title_search(search_type, limit=max(limit, 16), **extra)
+        clean = [_public_title_item(item) for item in items if _has_real_chapter(item)]
+        if section_name in {"latest_titles", "recent_titles"}:
+            clean.sort(
+                key=lambda item: (item.get("updated_at") or "", item.get("latest_chapter") or ""),
+                reverse=True,
+            )
+        return {"items": clean[:limit]}
+
+    return await _stale_while_revalidate(
+        "section",
+        _SECTIONS_TTL,
+        _SECTIONS_TTL * 3,
+        producer,
+        section_name=section_name,
+        limit=limit,
+    )
 
 
 @app.get("/api/title/{title_id}")
 async def api_title(title_id: str, user_id: str = Query(""), lang: str = Query(PREFERRED_CHAPTER_LANG)):
     try:
-        bundle = await get_title_bundle(title_id, lang)
+        return await _title_payload(title_id, lang, user_id)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-
-    public_bundle = _public_title_bundle(bundle, lang)
-    if user_id:
-        public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, bundle["title_id"]))
-    return public_bundle
 
 
 @app.get("/api/title/{title_id}/chapters")
 async def api_title_chapters(title_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)):
     try:
-        bundle = await get_title_bundle(title_id, lang)
+        bundle = await _title_payload(title_id, lang)
+        return {
+            "title_id": bundle["title_id"],
+            "title": bundle.get("title") or "",
+            "chapters": bundle.get("chapters") or [],
+        }
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
-    return {
-        "title_id": bundle["title_id"],
-        "title": bundle.get("title") or "",
-        "chapters": [_public_chapter(item) for item in flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)],
-    }
-
 
 @app.get("/api/chapter/{chapter_id}")
-async def api_chapter(chapter_id: str):
+async def api_chapter(chapter_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)):
     try:
-        return _public_reader_payload(await get_chapter_reader_payload(chapter_id, PREFERRED_CHAPTER_LANG))
+        return await _chapter_payload(chapter_id, lang)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -247,7 +524,6 @@ async def api_save_progress(payload: ProgressPayload):
     data = _load_progress()
     key = _progress_key(payload.user_id, payload.title_id)
     stored = payload.model_dump()
-    stored["chapter_url"] = ""
     data[key] = stored
     _save_progress(data)
 
@@ -257,8 +533,16 @@ async def api_save_progress(payload: ProgressPayload):
         chapter_id=payload.chapter_id,
         chapter_number=payload.chapter_number,
         title_name=payload.title_name,
-        chapter_url="",
+        chapter_url=payload.chapter_url,
     )
+
+    await _invalidate_prefix("cache")
+    return {"ok": True}
+
+
+@app.post("/api/refresh")
+async def api_refresh():
+    await _invalidate_prefix("cache")
     return {"ok": True}
 
 
@@ -279,6 +563,36 @@ async def api_telegraph_media(asset_key: str, asset_name: str):
 @app.get("/")
 async def root():
     return FileResponse(MINIAPP_DIR / "index.html")
+
+
+@app.middleware("http")
+async def add_perf_headers(request: Request, call_next):
+    start = time.perf_counter()
+    response: Response = await call_next(request)
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    response.headers["X-Response-Time"] = f"{elapsed_ms}ms"
+    response.headers["Cache-Control"] = response.headers.get("Cache-Control", "public, max-age=15")
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "path": str(request.url.path)},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Erro interno no miniapp.",
+            "path": str(request.url.path),
+            "error": str(exc),
+        },
+    )
 
 
 if MINIAPP_DIR.exists():
