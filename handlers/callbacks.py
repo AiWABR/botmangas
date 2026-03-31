@@ -19,6 +19,7 @@ from services.catalog_client import (
     get_title_overview,
     get_title_bundle,
     prefetch_reader_payloads,
+    prefetch_title_bundles,
 )
 from services.metrics import (
     get_last_read_entry,
