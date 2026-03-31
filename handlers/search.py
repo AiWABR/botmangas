@@ -1,3 +1,5 @@
+from urllib.parse import quote_plus
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
@@ -27,20 +29,31 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = (
-        "🔎 <b>Buscar manga</b>\n\n"
-        "Agora a busca acontece direto no miniapp.\n\n"
-        "✨ <i>Toque no botao abaixo para abrir e pesquisar o manga que quiser.</i>"
-    )
+    query = " ".join(context.args or []).strip()
+
+    if query:
+        encoded_query = quote_plus(query)
+        url = f"{WEBAPP_BASE_URL}/miniapp/index.html?q={encoded_query}"
+
+        text = (
+            "🔎 <b>Buscando seu manga...</b>\n\n"
+            f"📚 <b>Pesquisa:</b> {query}\n\n"
+            "✨ <i>Toque abaixo para abrir no miniapp.</i>"
+        )
+    else:
+        url = f"{WEBAPP_BASE_URL}/miniapp/index.html"
+
+        text = (
+            "🔎 <b>Buscar manga</b>\n\n"
+            "✨ <i>Toque abaixo para abrir o miniapp e pesquisar.</i>"
+        )
 
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "📚 Abrir busca no miniapp",
-                    web_app=WebAppInfo(
-                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html"
-                    ),
+                    "📚 Abrir no miniapp",
+                    web_app=WebAppInfo(url=url),
                 )
             ]
         ]
