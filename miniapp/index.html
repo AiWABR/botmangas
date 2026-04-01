@@ -249,50 +249,9 @@
     .btn-fav { background: var(--grad-fav); border: none; color: #fff; box-shadow: 0 4px 16px var(--glow-fav); }
     .btn-fav:hover { opacity: .94; box-shadow: 0 6px 24px var(--glow-fav); }
 
-    /* ── CONTINUE READING ── */
+    /* ── CONTINUE READING – simple scroll ── */
     .continue-section { margin-bottom: 24px; }
-    .continue-hero-card {
-      border-radius: var(--r-xl);
-      overflow: hidden;
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow-lg);
-      cursor: pointer;
-      position: relative;
-      min-height: 160px;
-      display: flex;
-      align-items: flex-end;
-      margin-bottom: 12px;
-      transition: transform .2s var(--ease), box-shadow .2s;
-      will-change: transform;
-    }
-    .continue-hero-card:hover { transform: translateY(-3px); box-shadow: 0 24px 70px rgba(0,0,0,0.8); }
-    .continue-hero-card:active { transform: scale(0.99); }
-    .chc-bg { position: absolute; inset: 0; background-size: cover; background-position: center; transition: transform .5s var(--ease); }
-    .continue-hero-card:hover .chc-bg { transform: scale(1.04); }
-    .chc-grad { position: absolute; inset: 0; background: linear-gradient(0deg, rgba(6,8,16,.97) 0%, rgba(6,8,16,.75) 40%, rgba(6,8,16,.2) 100%); }
-    .chc-badge {
-      position: absolute; top: 12px; left: 12px;
-      background: rgba(79,125,255,.85); color: #fff;
-      font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
-      padding: 4px 10px; border-radius: 999px;
-      backdrop-filter: blur(8px);
-      box-shadow: 0 2px 12px rgba(79,125,255,.4);
-    }
-    .chc-body { position: relative; z-index: 2; padding: 16px 16px 18px; width: 100%; display: flex; align-items: flex-end; gap: 14px; }
-    .chc-cover {
-      width: 70px; flex-shrink: 0;
-      aspect-ratio: 2/3; border-radius: 10px; overflow: hidden;
-      border: 1px solid rgba(255,255,255,.15);
-      box-shadow: 0 4px 20px rgba(0,0,0,.6);
-      background: var(--bg4);
-    }
-    .chc-cover img { width: 100%; height: 100%; object-fit: cover; }
-    .chc-info { flex: 1; min-width: 0; }
-    .chc-label { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--teal); margin-bottom: 4px; }
-    .chc-title { font-family: var(--font-d); font-size: 17px; font-weight: 800; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px; }
-    .chc-sub { color: var(--text2); font-size: 12px; margin-bottom: 10px; }
-    .chc-prog-wrap { background: rgba(255,255,255,.1); border-radius: 999px; height: 3px; overflow: hidden; }
-    .chc-prog-fill { height: 100%; background: var(--grad); border-radius: 999px; transition: width .5s var(--ease); }
+    /* hero card removed */
 
     .cw-scroll { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.08) transparent; }
     .cw-scroll::-webkit-scrollbar { height: 3px; }
@@ -306,7 +265,7 @@
       will-change: transform;
     }
     .cw-card:hover { transform: translateY(-3px); border-color: rgba(79,125,255,.35); }
-    .cw-thumb { position: relative; aspect-ratio: 2/3; background: var(--bg4); overflow: hidden; }
+    .cw-thumb { position: relative; aspect-ratio: 2/3; background: var(--bg4); overflow: hidden; border-radius: 0; }
     .cw-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform .4s var(--ease); }
     .cw-card:hover .cw-thumb img { transform: scale(1.07); }
     .cw-prog { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,.1); }
@@ -616,7 +575,7 @@
       </div>
     </section>
 
-    <!-- Continue Reading – hero card + scroll -->
+    <!-- Continue Reading – simple horizontal scroll like original -->
     <section class="continue-section hidden" id="continueSection">
       <div class="section-head">
         <div class="section-label">
@@ -627,7 +586,6 @@
           </div>
         </div>
       </div>
-      <div id="continueHeroCard"></div>
       <div class="cw-scroll" id="continueList"></div>
     </section>
 
@@ -1026,9 +984,12 @@ function buildCard(item, { showReadBar = false } = {}) {
     e.stopPropagation();
     handleFavClick(titleId, {
       title: title,
+      display_title: title,
       cover_url: cover,
+      background_url: cover,
       latest_chapter: item.latest_chapter,
       status: item.status,
+      anilist_score: item.anilist_score || item.rating,
     }, e.currentTarget);
   });
 
@@ -1147,10 +1108,9 @@ function renderContinueSection() {
   const items = Object.values(state.localProgress || {})
     .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
     .filter(item => item.title_id && item.chapter_id)
-    .slice(0, 15);
+    .slice(0, 12);
 
   const section = $$("continueSection");
-  const heroContainer = $$("continueHeroCard");
   const list = $$("continueList");
   const countEl = $$("continueCount");
 
@@ -1162,73 +1122,35 @@ function renderContinueSection() {
   section.classList.remove("hidden");
   countEl.textContent = `${items.length} obra(s) em andamento`;
 
-  // Hero card – most recent item
-  const hero = items[0];
-  const heroCover = hero.cover_url || "";
-  const pct = hero.total_pages > 0
-    ? Math.round((hero.page_index / hero.total_pages) * 100) : 0;
-
-  heroContainer.innerHTML = `
-    <div class="continue-hero-card" id="chcCard">
-      <div class="chc-bg" style="${heroCover ? `background-image:url('${esc(heroCover)}')` : "background:var(--bg4)"}"></div>
-      <div class="chc-grad"></div>
-      <div class="chc-badge">⏯ Continuar</div>
-      <div class="chc-body">
-        <div class="chc-cover">
-          ${heroCover ? `<img src="${esc(heroCover)}" alt="${esc(hero.title_name)}" loading="lazy" />` : ""}
+  list.innerHTML = items.map(item => {
+    const pct = item.total_pages > 0
+      ? Math.max(4, Math.min(100, ((item.page_index || 0) / item.total_pages) * 100))
+      : 0;
+    const cover = item.cover_url || "";
+    return `
+      <article class="cw-card" data-title-id="${esc(item.title_id)}" data-chapter-id="${esc(item.chapter_id)}">
+        <div class="cw-thumb">
+          ${cover ? `<img src="${esc(cover)}" alt="${esc(item.title_name)}" loading="lazy" />` : ""}
+          <div class="cw-play"><div class="cw-play-ico">▶</div></div>
+          <div class="cw-badge">Cap. ${esc(item.chapter_number || "?")}</div>
+          <div class="cw-prog"><div class="cw-prog-fill" style="width:${pct}%"></div></div>
         </div>
-        <div class="chc-info">
-          <div class="chc-label">Última leitura</div>
-          <div class="chc-title">${esc(hero.title_name || "Mangá")}</div>
-          <div class="chc-sub">Capítulo ${esc(hero.chapter_number || "?")} • Página ${esc(hero.page_index || 1)} de ${esc(hero.total_pages || "?")}</div>
-          <div class="chc-prog-wrap">
-            <div class="chc-prog-fill" style="width:${pct}%"></div>
-          </div>
+        <div class="cw-info">
+          <div class="cw-title">${esc(item.title_name || "Mangá")}</div>
+          <div class="cw-sub">Pág. ${esc(item.page_index || 1)} de ${esc(item.total_pages || "?")}</div>
         </div>
-        <button class="btn btn-primary">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-          Continuar
-        </button>
-      </div>
-    </div>
-  `;
+      </article>
+    `;
+  }).join("");
 
-  heroContainer.querySelector(".continue-hero-card").addEventListener("click", () => {
-    if (hero.chapter_id) openChapter(hero.chapter_id);
-    else openTitle(hero.title_id);
-  });
-
-  // Scroll list – rest of items
-  if (items.length > 1) {
-    list.innerHTML = items.slice(1).map(item => {
-      const pct2 = item.total_pages > 0 ? Math.max(4, Math.min(100, ((item.page_index || 0) / item.total_pages) * 100)) : 0;
-      return `
-        <article class="cw-card" data-title-id="${esc(item.title_id)}" data-chapter-id="${esc(item.chapter_id)}">
-          <div class="cw-thumb">
-            ${item.cover_url ? `<img src="${esc(item.cover_url)}" alt="${esc(item.title_name)}" loading="lazy" />` : ""}
-            <div class="cw-play"><div class="cw-play-ico">▶</div></div>
-            <div class="cw-badge">Cap. ${esc(item.chapter_number || "?")}</div>
-            <div class="cw-prog"><div class="cw-prog-fill" style="width:${pct2}%"></div></div>
-          </div>
-          <div class="cw-info">
-            <div class="cw-title">${esc(item.title_name || "Mangá")}</div>
-            <div class="cw-sub">Continuar leitura</div>
-          </div>
-        </article>
-      `;
-    }).join("");
-
-    list.querySelectorAll(".cw-card").forEach(card => {
-      card.addEventListener("click", () => {
-        const cid = card.dataset.chapterId;
-        const tid = card.dataset.titleId;
-        if (cid) openChapter(cid);
-        else if (tid) openTitle(tid);
-      });
+  list.querySelectorAll(".cw-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const cid = card.dataset.chapterId;
+      const tid = card.dataset.titleId;
+      if (cid) openChapter(cid);
+      else if (tid) openTitle(tid);
     });
-  } else {
-    list.innerHTML = "";
-  }
+  });
 }
 
 function renderHome(data) {
@@ -1302,12 +1224,14 @@ function buildMetaPills(bundle, chapters = []) {
 }
 
 // Sort chapters newest first (highest chapter_number first)
+// chapter_number can be "1178", "Ch. 1178", "Cap. 1178", "1178.5", etc.
+function extractChapterNum(ch) {
+  const raw = String(ch.chapter_number || ch.number || "0");
+  const match = raw.match(/[\d]+(?:[.,]\d+)?/);
+  return match ? parseFloat(match[0].replace(",", ".")) : 0;
+}
 function sortChapters(chapters) {
-  return [...chapters].sort((a, b) => {
-    const na = parseFloat(a.chapter_number) || 0;
-    const nb = parseFloat(b.chapter_number) || 0;
-    return nb - na; // descending
-  });
+  return [...chapters].sort((a, b) => extractChapterNum(b) - extractChapterNum(a));
 }
 
 function renderDetail(bundle, opts = {}) {
@@ -1589,6 +1513,8 @@ function attachReaderObserver(payload) {
     const index = Number(visible.target.dataset.index || "0");
     if (index === lastSaved) return;
     lastSaved = index;
+    const tb = state.cache.titles.get(payload.title_id);
+    const savedCover = tb?.cover_url || getProgress(payload.title_id)?.cover_url || "";
     persistProgress({
       title_id: payload.title_id,
       title_name: payload.title,
@@ -1596,6 +1522,7 @@ function attachReaderObserver(payload) {
       chapter_number: payload.chapter_number,
       page_index: index,
       total_pages: images.length,
+      cover_url: savedCover,
     }).catch(() => {});
   }, { threshold: [0.3, 0.6, 0.9] });
 
@@ -1640,6 +1567,10 @@ async function openChapter(chapterId, force = false, options = {}) {
 
       renderChapter(payload, { replaceHistory: Boolean(options.replaceHistory) });
 
+      // Grab cover from title cache if available
+      const titleBundle = state.cache.titles.get(payload.title_id);
+      const coverUrl = titleBundle?.cover_url || "";
+
       await persistProgress({
         title_id: payload.title_id,
         title_name: payload.title,
@@ -1647,6 +1578,7 @@ async function openChapter(chapterId, force = false, options = {}) {
         chapter_number: payload.chapter_number,
         page_index: 1,
         total_pages: payload.images?.length || 0,
+        cover_url: coverUrl,
       });
 
       // Preload adjacent chapters in background
