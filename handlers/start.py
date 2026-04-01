@@ -177,15 +177,15 @@ async def _send_welcome(message, first_name: str) -> None:
         )
 
     text = (
-             f"🎬 <b>Bem-vindo ao {BOT_BRAND}!</b>\n\n"
-                "Aqui você pode encontrar animes de forma rápida, direto no Telegram.\n\n"
-                "✨ <b>O que você pode fazer aqui:</b>\n\n"
-                "• 🔎 Buscar qualquer anime\n"
-                "• 📺 Navegar pelos episódios\n"
-                "• ✅ Marcar episódios como vistos\n"
-                "• ⚡ Assistir rápido e sem complicação\n\n"
-                "Use <code>/buscar</code> para começar."
-            )
+        f"🎬 <b>Bem-vindo ao {BOT_BRAND}!</b>\n\n"
+        "Aqui você pode encontrar animes de forma rápida, direto no Telegram.\n\n"
+        "✨ <b>O que você pode fazer aqui:</b>\n\n"
+        "• 🔎 Buscar qualquer anime\n"
+        "• 📺 Navegar pelos episódios\n"
+        "• ✅ Marcar episódios como vistos\n"
+        "• ⚡ Assistir rápido e sem complicação\n\n"
+        "Use <code>/buscar</code> para começar."
+    )
 
     try:
         await message.reply_photo(
@@ -241,42 +241,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             title_id = _extract_title_id(arg)
             if title_id:
-                loading_msg = await message.reply_text(
-                    "⏳ <b>Abrindo seu mangá...</b>",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    "📖 Abrir mangá",
-                                    web_app=WebAppInfo(
-                                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={title_id}"
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
+                await send_title_panel(message, context, title_id, user.id, edit=False)
                 return
 
             chapter_id = _extract_chapter_id(arg)
             if chapter_id:
-                loading_msg = await message.reply_text(
-                    "⏳ <b>Abrindo seu capítulo...</b>",
-                    parse_mode="HTML",
-                    reply_markup=InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton(
-                                    "📄 Ler capítulo",
-                                    web_app=WebAppInfo(
-                                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?chapter_id={chapter_id}"
-                                    ),
-                                )
-                            ]
-                        ]
-                    ),
-                )
+                await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
                 return
 
             await _send_welcome(message, user.first_name or "leitor")
