@@ -485,7 +485,7 @@ def _build_caption(manga: dict) -> str:
     return (
         f"📚 <b>{full_title}</b>\n\n"
         + "\n".join(info_lines)
-        + f"\n\nMangás Brasil | @MangasBrasil}"
+        + f"\n\nMangás Brasil | @MangasBrasil"
     )
 
 
