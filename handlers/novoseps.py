@@ -75,15 +75,12 @@ def _caption(item: dict) -> str:
     return "\n".join(lines)
 
 
-def _keyboard(item: dict) -> InlineKeyboardMarkup:
-    rows = [
-        [
+def _keyboard(item: dict) -> InlineKeyboardMarkup | None:
     if item.get("title_id"):
-        rows.append([InlineKeyboardButton("📚 Abrir obra", url=_title_link(str(item["title_id"])))])
-    return InlineKeyboardMarkup(rows)
-            )
-        ]
-    ]
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📚 Abrir obra", url=_title_link(str(item["title_id"])))]
+        ])
+    return None
 
 
 async def _send_recent_chapter(bot, chat_id, item: dict) -> None:
