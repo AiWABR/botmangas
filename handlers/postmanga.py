@@ -439,7 +439,7 @@ def _build_caption(manga: dict) -> str:
         f"<b>Formato:</b> <i>{html.escape(format_name)}</i>\n"
         f"<b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>\n"
         f"<b>Status:</b> <i>{html.escape(str(status))}</i>\n\n"
-        f"💬 {description or 'Sem descricao disponivel.'}"
+        f"💬 <i>Leia pelo bot, do jeito mais simples e completo.</i>"
     )
 
 
@@ -522,44 +522,38 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 bundle = None
 
-        manga = _merge_post_payload(overview, search_item, bundle)
-        photo = (
-            manga.get("origin_cover_url")
-            or manga.get("banner_url")
-            or manga.get("cover_url")
-            or manga.get("background_url")
-            or None
-        )
-        caption = _build_caption(manga)
-        keyboard = _build_keyboard(manga)
-        destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or message.chat_id)
+       manga = _merge_post_payload(overview, search_item, bundle)
+       photo = manga.get("origin_cover_url") or None
+       caption = _build_caption(manga)
+       keyboard = _build_keyboard(manga)
+       destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or message.chat_id)
 
-        if photo:
-            try:
-                await context.bot.send_photo(
-                    chat_id=destination,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
-            except Exception as photo_error:
-                print("ERRO POSTMANGA FOTO:", repr(photo_error))
-                await context.bot.send_message(
-                    chat_id=destination,
-                    text=caption,
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True,
-                )
-        else:
-            await context.bot.send_message(
-                chat_id=destination,
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-            )
+       if photo:
+           try:
+               await context.bot.send_photo(
+                   chat_id=destination,
+                   photo=photo,
+                   caption=caption,
+                   parse_mode="HTML",
+                   reply_markup=keyboard,
+               )
+           except Exception as photo_error:
+               print("ERRO POSTMANGA FOTO:", repr(photo_error))
+               await context.bot.send_message(
+                   chat_id=destination,
+                   text=caption,
+                   parse_mode="HTML",
+                   reply_markup=keyboard,
+                   disable_web_page_preview=True,
+               )
+       else:
+           await context.bot.send_message(
+               chat_id=destination,
+               text=caption,
+               parse_mode="HTML",
+                      reply_markup=keyboard,
+               disable_web_page_preview=True,
+           )
 
         await _send_divider(context.bot, destination)
 
