@@ -1,11 +1,14 @@
 import asyncio
 import html
+import json
+import re
 import unicodedata
+from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_IDS, BOT_BRAND, BOT_USERNAME, CANAL_POSTAGEM_MANGA, STICKER_DIVISOR
+from config import ADMIN_IDS, BOT_USERNAME, CANAL_POSTAGEM_MANGA, STICKER_DIVISOR
 from core.channel_target import ensure_channel_target
 from services.catalog_client import (
     get_cached_title_bundle,
@@ -52,11 +55,22 @@ def _normalize_text(value: str) -> str:
 
 
 def _pick_main_title(manga: dict) -> str:
-    return manga.get("display_title") or manga.get("title") or manga.get("preferred_title") or "Sem titulo"
+    return (
+        manga.get("display_title")
+        or manga.get("title")
+        or manga.get("preferred_title")
+        or manga.get("name")
+        or "Sem titulo"
+    )
 
 
 def _clean_description(description: str) -> str:
-    return (description or "").strip()
+    description = (description or "").strip()
+    description = re.sub(r"<br\s*/?>", "\n", description, flags=re.I)
+    description = re.sub(r"</p\s*>", "\n", description, flags=re.I)
+    description = re.sub(r"<[^>]+>", " ", description)
+    description = html.unescape(description)
+    return " ".join(description.split())
 
 
 def _translate_status(value: str) -> str:
@@ -78,13 +92,18 @@ def _latest_chapter_summary(manga: dict) -> dict:
     if isinstance(latest, dict) and latest.get("chapter_id"):
         return latest
 
-    chapter_id = (manga.get("chapter_id") or "").strip()
+    chapter_id = str(manga.get("chapter_id") or "").strip()
     if not chapter_id:
         return {}
 
     return {
         "chapter_id": chapter_id,
-        "chapter_number": (manga.get("latest_chapter") or manga.get("chapter_number") or "").strip(),
+        "chapter_number": str(
+            manga.get("latest_chapter")
+            or manga.get("chapter_number")
+            or manga.get("latest_chapter_number")
+            or ""
+        ).strip(),
     }
 
 
@@ -115,6 +134,210 @@ def _pick_best_candidate(query: str, results: list[dict]) -> dict | None:
     return max(results, key=_score)
 
 
+def _flatten_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        text = html.unescape(value).strip()
+        if not text:
+            return []
+        parts = re.split(r"[|,/•]+", text)
+        return [p.strip() for p in parts if p.strip()]
+
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            out.extend(_flatten_strings(item))
+        return out
+
+    if isinstance(value, dict):
+        out: list[str] = []
+        for key in ("name", "title", "label", "genre", "tag"):
+            if value.get(key):
+                out.extend(_flatten_strings(value.get(key)))
+        return out
+
+    return []
+
+
+def _unique_keep_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+
+    for item in items:
+        clean = " ".join(str(item).strip().split())
+        if not clean:
+            continue
+        norm = _normalize_text(clean)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        output.append(clean)
+
+    return output
+
+
+def _extract_json_ld_images(raw_html: str) -> list[str]:
+    urls: list[str] = []
+    if not raw_html:
+        return urls
+
+    matches = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        raw_html,
+        flags=re.I | re.S,
+    )
+
+    for block in matches:
+        block = block.strip()
+        if not block:
+            continue
+        try:
+            payload = json.loads(block)
+        except Exception:
+            continue
+
+        def walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key in {"thumbnailUrl", "contentUrl", "url", "image", "og:image"} and isinstance(value, str):
+                        if value.startswith("http"):
+                            urls.append(value)
+                    else:
+                        walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
+        walk(payload)
+
+    return urls
+
+
+def _extract_meta_content(raw_html: str, prop: str) -> str:
+    if not raw_html:
+        return ""
+
+    pattern = (
+        r'<meta[^>]+(?:property|name)=["\']'
+        + re.escape(prop)
+        + r'["\'][^>]+content=["\']([^"\']+)["\']'
+    )
+    match = re.search(pattern, raw_html, flags=re.I)
+    return html.unescape(match.group(1)).strip() if match else ""
+
+
+def _extract_badges_from_html(raw_html: str) -> list[str]:
+    if not raw_html:
+        return []
+
+    matches = re.findall(
+        r'data-tag-id="[^"]+"[^>]*>([^<]+)</span>',
+        raw_html,
+        flags=re.I,
+    )
+    return _unique_keep_order([html.unescape(x).strip() for x in matches if x.strip()])
+
+
+def _resolve_manga_genres(manga: dict) -> list[str]:
+    candidates: list[str] = []
+
+    for key in (
+        "genres",
+        "genre_names",
+        "tags",
+        "tag_names",
+        "anilist_genres",
+        "anilist_tags",
+        "mangaball_genres",
+        "mangaball_tags",
+        "categories",
+        "keywords",
+    ):
+        candidates.extend(_flatten_strings(manga.get(key)))
+
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+    candidates.extend(_extract_badges_from_html(raw_html))
+
+    return _unique_keep_order(candidates)
+
+
+def _resolve_origin_photo(manga: dict) -> str:
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+
+    candidates = [
+        manga.get("origin_cover_url"),
+        manga.get("site_cover_url"),
+        manga.get("source_cover_url"),
+        manga.get("og_image"),
+        manga.get("seo_image"),
+        manga.get("thumbnailUrl"),
+        _extract_meta_content(raw_html, "og:image"),
+        * _extract_json_ld_images(raw_html),
+        manga.get("cover_url"),
+        manga.get("banner_url"),
+        manga.get("background_url"),
+    ]
+
+    for candidate in candidates:
+        url = str(candidate or "").strip()
+        if url.startswith("http"):
+            return url
+    return ""
+
+
+def _resolve_description(manga: dict) -> str:
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+
+    description = (
+        manga.get("description")
+        or manga.get("synopsis")
+        or manga.get("anilist_description")
+        or manga.get("seo_description")
+        or _extract_meta_content(raw_html, "description")
+        or _extract_meta_content(raw_html, "og:description")
+        or ""
+    )
+
+    return _clean_description(description)
+
+
+def _resolve_year(manga: dict) -> str:
+    for key in ("year", "release_year", "published_year", "start_year", "anilist_year"):
+        value = str(manga.get(key) or "").strip()
+        if value:
+            return value
+
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+    match = re.search(r"Published:\s*<b>(\d{4})</b>", raw_html, flags=re.I)
+    return match.group(1) if match else ""
+
+
 def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None = None) -> dict:
     merged = dict(overview or {})
     if bundle:
@@ -126,37 +349,72 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
         merged["title"] = search_item.get("title") or ""
     if not merged.get("display_title"):
         merged["display_title"] = search_item.get("display_title") or merged.get("title") or ""
+
     if not merged.get("cover_url"):
         merged["cover_url"] = search_item.get("cover_url") or ""
     if not merged.get("background_url"):
         merged["background_url"] = search_item.get("background_url") or merged.get("cover_url") or ""
     if not merged.get("banner_url"):
         merged["banner_url"] = merged.get("background_url") or merged.get("cover_url") or ""
+
+    origin_photo = _resolve_origin_photo(merged)
+    if origin_photo:
+        merged["origin_cover_url"] = origin_photo
+        merged["cover_url"] = origin_photo
+        if not merged.get("banner_url"):
+            merged["banner_url"] = origin_photo
+
+    genres = _resolve_manga_genres(merged)
+    if genres:
+        merged["genres"] = genres
+
+    description = _resolve_description(merged)
+    if description:
+        merged["description"] = description
+
+    year = _resolve_year(merged)
+    if year:
+        merged["year"] = year
+
     if not merged.get("latest_chapter"):
         latest = _latest_chapter_summary(search_item)
         if latest:
             merged["latest_chapter"] = latest
+
     return merged
 
 
 def _build_caption(manga: dict) -> str:
     full_title = html.escape(_pick_main_title(manga)).upper()
-    genres = manga.get("genres") or []
-    genres_text = ", ".join(f"#{genre}" for genre in genres[:4]) if genres else "N/A"
-    genres_text = html.escape(genres_text)
 
-    chapters = manga.get("total_chapters") or manga.get("anilist_chapters") or "?"
-    status = _translate_status(manga.get("status") or manga.get("anilist_status") or "N/A")
-    description = html.escape(
-        _truncate_text(_clean_description(manga.get("description") or manga.get("anilist_description") or ""), 320)
+    genres = _resolve_manga_genres(manga)
+    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in genres[:6]) if genres else "N/A"
+
+    chapters = (
+        manga.get("total_chapters")
+        or manga.get("chapter_count")
+        or manga.get("anilist_chapters")
+        or "?"
     )
+    status = _translate_status(manga.get("status") or manga.get("anilist_status") or "N/A")
+    format_name = _translate_format(manga.get("format") or manga.get("type") or manga.get("anilist_format") or "")
+    year = _resolve_year(manga)
+    description = html.escape(_truncate_text(_resolve_description(manga), 320))
+
+    info_lines = [
+        f"<b>Generos:</b> <i>{html.escape(genres_text)}</i>",
+        f"<b>Formato:</b> <i>{html.escape(format_name)}</i>",
+        f"<b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>",
+        f"<b>Status:</b> <i>{html.escape(str(status))}</i>",
+    ]
+
+    if year:
+        info_lines.insert(3, f"<b>Ano:</b> <i>{html.escape(year)}</i>")
 
     return (
         f"📚 <b>{full_title}</b>\n\n"
-        f"<b>Generos:</b> <i>{genres_text}</i>\n"
-        f"<b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>\n"
-        f"<b>Status:</b> <i>{html.escape(str(status))}</i>\n\n"
-        f"💬 {description or 'Sem descricao disponivel.'}"
+        + "\n".join(info_lines)
+        + f"\n\n💬 {description or 'Sem descricao disponivel.'}"
     )
 
 
@@ -215,6 +473,7 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         title_id = search_item["title_id"]
+
         overview = get_cached_title_overview(title_id)
         if overview is None:
             try:
@@ -230,7 +489,15 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bundle = None
 
         manga = _merge_post_payload(overview, search_item, bundle)
-        photo = manga.get("banner_url") or manga.get("cover_url") or manga.get("background_url") or None
+
+        photo = (
+            manga.get("origin_cover_url")
+            or manga.get("cover_url")
+            or manga.get("banner_url")
+            or manga.get("background_url")
+            or None
+        )
+
         caption = _build_caption(manga)
         keyboard = _build_keyboard(manga)
         destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or message.chat_id)
