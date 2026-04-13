@@ -24,42 +24,17 @@ STATUS_PT_MAP = {
     "hiatus": "Em hiato",
     "cancelled": "Cancelado",
     "dropped": "Cancelado",
-    "releasing": "Em lancamento",
+    "releasing": "Em lançamento",
     "finished": "Finalizado",
 }
 
 FORMAT_PT_MAP = {
-    "MANGA": "Manga",
+    "MANGA": "Mangá",
     "MANHWA": "Manhwa",
     "MANHUA": "Manhua",
     "ONE_SHOT": "One-shot",
     "NOVEL": "Novel",
 }
-
-BLOCKED_GENRE_EXACT = {
-    "based on a korean novel",
-    "based on a novel",
-    "based on a web novel",
-    "based on a light novel",
-    "based on a webtoon",
-    "based on a manhwa",
-    "based on a manhua",
-    "based on an anime",
-    "based on a game",
-    "based on a video game",
-    "based on a movie",
-    "based on a tv series",
-    "adaptation",
-}
-
-BLOCKED_GENRE_PATTERNS = [
-    r"^based on\b",
-    r"\bnovel\b",
-    r"\bweb novel\b",
-    r"\bkorean novel\b",
-    r"\blight novel\b",
-    r"\badaptation\b",
-]
 
 
 def _truncate_text(text: str, limit: int = 320) -> str:
@@ -85,7 +60,7 @@ def _pick_main_title(manga: dict) -> str:
         or manga.get("title")
         or manga.get("preferred_title")
         or manga.get("name")
-        or "Sem titulo"
+        or "Sem título"
     )
 
 
@@ -108,7 +83,7 @@ def _translate_status(value: str) -> str:
 def _translate_format(value: str) -> str:
     raw = str(value or "").strip().upper()
     if not raw:
-        return "Manga"
+        return "Mangá"
     return FORMAT_PT_MAP.get(raw, raw.title())
 
 
@@ -311,7 +286,7 @@ def _resolve_origin_photo(manga: dict) -> str:
         manga.get("seo_image"),
         manga.get("thumbnailUrl"),
         _extract_meta_content(raw_html, "og:image"),
-        * _extract_json_ld_images(raw_html),
+        *_extract_json_ld_images(raw_html),
         manga.get("cover_url"),
         manga.get("banner_url"),
         manga.get("background_url"),
@@ -427,9 +402,9 @@ def _build_caption(manga: dict) -> str:
     description = html.escape(_truncate_text(_resolve_description(manga), 320))
 
     info_lines = [
-        f"<b>Generos:</b> <i>{html.escape(genres_text)}</i>",
+        f"<b>Gêneros:</b> <i>{html.escape(genres_text)}</i>",
         f"<b>Formato:</b> <i>{html.escape(format_name)}</i>",
-        f"<b>Capitulos:</b> <i>{html.escape(str(chapters))}</i>",
+        f"<b>Capítulos:</b> <i>{html.escape(str(chapters))}</i>",
         f"<b>Status:</b> <i>{html.escape(str(status))}</i>",
     ]
 
@@ -439,7 +414,7 @@ def _build_caption(manga: dict) -> str:
     return (
         f"📚 <b>{full_title}</b>\n\n"
         + "\n".join(info_lines)
-        + f"\n\n 💬 <i>Leia pelo bot, do jeito mais simples e completo.</i>"
+        + f"\n\n💬 {description or 'Sem descrição disponível.'}"
     )
 
 
@@ -459,16 +434,16 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not _is_admin(user_id):
         await message.reply_text(
-            "❌ <b>Voce nao tem permissao para usar este comando.</b>",
+            "❌ <b>Você não tem permissão para usar este comando.</b>",
             parse_mode="HTML",
         )
         return
 
     if not context.args:
         await message.reply_text(
-            "❌ <b>Faltou o nome do manga.</b>\n\n"
+            "❌ <b>Faltou o nome do mangá.</b>\n\n"
             "Use assim:\n"
-            "<code>/postmanga nome do manga</code>\n\n"
+            "<code>/postmanga nome do mangá</code>\n\n"
             "📌 <b>Exemplo:</b>\n"
             "<code>/postmanga solo leveling</code>",
             parse_mode="HTML",
@@ -484,12 +459,12 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         results = await search_titles(query, limit=8)
         if not results:
-            await status_message.edit_text("❌ <b>Nao encontrei esse manga.</b>", parse_mode="HTML")
+            await status_message.edit_text("❌ <b>Não encontrei esse mangá.</b>", parse_mode="HTML")
             return
 
         search_item = _pick_best_candidate(query, results)
         if not search_item or not search_item.get("title_id"):
-            await status_message.edit_text("❌ <b>Nao consegui identificar a obra certa.</b>", parse_mode="HTML")
+            await status_message.edit_text("❌ <b>Não consegui identificar a obra certa.</b>", parse_mode="HTML")
             return
 
         await status_message.edit_text(
@@ -555,7 +530,10 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         if STICKER_DIVISOR:
-            await context.bot.send_sticker(chat_id=destination, sticker=STICKER_DIVISOR)
+            try:
+                await context.bot.send_sticker(chat_id=destination, sticker=STICKER_DIVISOR)
+            except Exception as sticker_error:
+                print("ERRO STICKER DIVISOR MANGA:", repr(sticker_error), STICKER_DIVISOR)
 
         await status_message.edit_text(
             f"✅ <b>Postagem enviada com sucesso.</b>\n\n<code>{html.escape(manga.get('title') or query)}</code>",
@@ -564,6 +542,6 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as error:
         print("ERRO POSTMANGA:", repr(error))
         await status_message.edit_text(
-            f"❌ <b>Nao consegui postar esse manga.</b>\n\n{html.escape(str(error) or 'Tente novamente em instantes.')}",
+            f"❌ <b>Não consegui postar esse mangá.</b>\n\n{html.escape(str(error) or 'Tente novamente em instantes.')}",
             parse_mode="HTML",
         )
