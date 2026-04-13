@@ -80,12 +80,6 @@ def _caption(item: dict) -> str:
 def _keyboard(item: dict) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(
-                "📖 Ler capítulo",
-                url=_deep_link(str(item["chapter_id"]), str(item.get("title_id") or "")),
-            )
-        ]
-    ]
     if item.get("title_id"):
         rows.append([InlineKeyboardButton("📚 Abrir obra", url=_title_link(str(item["title_id"])))])
     return InlineKeyboardMarkup(rows)
