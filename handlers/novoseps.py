@@ -65,11 +65,9 @@ def _caption(item: dict) -> str:
     brand = html.escape(BOT_BRAND)
 
     lines = [
-        "🆕 <b>Novo capítulo em PT-BR</b>",
-        "",
         f"📚 <b>{title}</b>",
+        "",
         f"» <b>Capítulo:</b> <i>{chapter_number}</i>",
-        "» <b>Idioma:</b> <i>PT-BR</i>",
         f"» <b>Atualizado:</b> <i>{updated_at}</i>",
         "",
         f"✨ <i>Abra no {brand} e continue a leitura.</i>",
@@ -80,15 +78,12 @@ def _caption(item: dict) -> str:
 def _keyboard(item: dict) -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(
-                "📖 Ler capítulo",
-                url=_deep_link(str(item["chapter_id"]), str(item.get("title_id") or "")),
-            )
-        ]
-    ]
     if item.get("title_id"):
         rows.append([InlineKeyboardButton("📚 Abrir obra", url=_title_link(str(item["title_id"])))])
     return InlineKeyboardMarkup(rows)
+            )
+        ]
+    ]
 
 
 async def _send_recent_chapter(bot, chat_id, item: dict) -> None:
