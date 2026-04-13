@@ -36,6 +36,31 @@ FORMAT_PT_MAP = {
     "NOVEL": "Novel",
 }
 
+BLOCKED_GENRE_EXACT = {
+    "based on a korean novel",
+    "based on a novel",
+    "based on a web novel",
+    "based on a light novel",
+    "based on a webtoon",
+    "based on a manhwa",
+    "based on a manhua",
+    "based on an anime",
+    "based on a game",
+    "based on a video game",
+    "based on a movie",
+    "based on a tv series",
+    "adaptation",
+}
+
+BLOCKED_GENRE_PATTERNS = [
+    r"^based on\b",
+    r"\bnovel\b",
+    r"\bweb novel\b",
+    r"\bkorean novel\b",
+    r"\blight novel\b",
+    r"\badaptation\b",
+]
+
 
 def _truncate_text(text: str, limit: int = 320) -> str:
     text = (text or "").strip()
@@ -414,7 +439,7 @@ def _build_caption(manga: dict) -> str:
     return (
         f"📚 <b>{full_title}</b>\n\n"
         + "\n".join(info_lines)
-        + f"\n\n💬 {description or 'Sem descricao disponivel.'}"
+        + f"\n\n 💬 <i>Leia pelo bot, do jeito mais simples e completo.</i>"
     )
 
 
