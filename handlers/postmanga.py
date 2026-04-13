@@ -6,7 +6,6 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -66,22 +65,19 @@ BLOCKED_GENRE_PATTERNS = [
 ]
 
 CATALOG_SITE_BASE = os.getenv("CATALOG_SITE_BASE", "https://mangaball.net").rstrip("/")
-
 POSTED_MANGAS_FILE = Path("data/mangas_postados.json")
-SKIPPED_MANGAS_FILE = Path("data/mangas_pulados.json")
-
-BULK_DELAY_SECONDS = float(os.getenv("MANGA_BULK_DELAY_SECONDS", "8"))
-BULK_HTTP_TIMEOUT = 20.0
+BULK_DELAY_SECONDS = float(os.getenv("MANGA_BULK_DELAY_SECONDS", "30"))
+BULK_HTTP_TIMEOUT = 25.0
 DIVIDER_FALLBACK_TEXT = "━━━━━━━━━━━━━━"
-
 BOTDATA_BULK_RUNNING_KEY = "postallmangas_running"
 BOTDATA_BULK_TASK_KEY = "postallmangas_task"
 
-HTTPX_LIMITS = httpx.Limits(max_keepalive_connections=10, max_connections=20)
 
-
-class SkipMangaPost(Exception):
-    pass
+def _truncate_text(text: str, limit: int = 320) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
 
 
 def _is_admin(user_id: int | None) -> bool:
@@ -102,6 +98,15 @@ def _pick_main_title(manga: dict) -> str:
         or manga.get("name")
         or "Sem título"
     )
+
+
+def _clean_description(description: str) -> str:
+    description = (description or "").strip()
+    description = re.sub(r"<br\s*/?>", "\n", description, flags=re.I)
+    description = re.sub(r"</p\s*>", "\n", description, flags=re.I)
+    description = re.sub(r"<[^>]+>", " ", description)
+    description = html.unescape(description)
+    return " ".join(description.split())
 
 
 def _translate_status(value: str) -> str:
@@ -270,7 +275,6 @@ def _extract_json_ld_images(raw_html: str) -> list[str]:
         block = block.strip()
         if not block:
             continue
-
         try:
             payload = json.loads(block)
         except Exception:
@@ -377,6 +381,28 @@ def _resolve_origin_photo(manga: dict) -> str:
     return ""
 
 
+def _resolve_description(manga: dict) -> str:
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+
+    description = (
+        manga.get("description")
+        or manga.get("synopsis")
+        or manga.get("anilist_description")
+        or manga.get("seo_description")
+        or _extract_meta_content(raw_html, "description")
+        or _extract_meta_content(raw_html, "og:description")
+        or ""
+    )
+
+    return _clean_description(description)
+
+
 def _resolve_year(manga: dict) -> str:
     for key in ("year", "release_year", "published_year", "start_year", "anilist_year"):
         value = str(manga.get(key) or "").strip()
@@ -424,6 +450,10 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
     if genres:
         merged["genres"] = genres
 
+    description = _resolve_description(merged)
+    if description:
+        merged["description"] = description
+
     year = _resolve_year(merged)
     if year:
         merged["year"] = year
@@ -436,12 +466,43 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
     return merged
 
 
-def _new_http_client(timeout: float) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0"},
-        limits=HTTPX_LIMITS,
+def _build_caption(manga: dict) -> str:
+    full_title = html.escape(_pick_main_title(manga)).upper()
+
+    genres = _filter_display_genres(_resolve_manga_genres(manga), limit=6)
+    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in genres) if genres else "N/A"
+
+    chapters = (
+        manga.get("total_chapters")
+        or manga.get("chapter_count")
+        or manga.get("anilist_chapters")
+        or "?"
+    )
+    status = _translate_status(manga.get("status") or manga.get("anilist_status") or "N/A")
+    format_name = _translate_format(manga.get("format") or manga.get("type") or manga.get("anilist_format") or "")
+    year = _resolve_year(manga)
+
+    info_lines = [
+        f"<b>Gêneros:</b> <i>{html.escape(genres_text)}</i>",
+        f"<b>Formato:</b> <i>{html.escape(format_name)}</i>",
+        f"<b>Capítulos:</b> <i>{html.escape(str(chapters))}</i>",
+        f"<b>Status:</b> <i>{html.escape(str(status))}</i>",
+    ]
+
+    if year:
+        info_lines.insert(3, f"<b>Ano:</b> <i>{html.escape(year)}</i>")
+
+    return (
+        f"📚 <b>{full_title}</b>\n\n"
+        + "\n".join(info_lines)
+        + "\n\nMangás Brasil | @MangasBrasil"
+    )
+
+
+def _build_keyboard(manga: dict) -> InlineKeyboardMarkup:
+    title_id = manga.get("title_id") or ""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📚 Ler obra", url=f"https://t.me/{BOT_USERNAME}?start=title_{title_id}")]]
     )
 
 
@@ -465,179 +526,12 @@ def _save_posted_manga_ids(items: list[str]) -> None:
     )
 
 
-def _load_skipped_manga_map() -> dict[str, dict]:
-    try:
-        if not SKIPPED_MANGAS_FILE.exists():
-            return {}
-        data = json.loads(SKIPPED_MANGAS_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-    return {}
-
-
-def _save_skipped_manga_map(items: dict[str, dict]) -> None:
-    SKIPPED_MANGAS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SKIPPED_MANGAS_FILE.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def _mark_manga_skipped(skipped_map: dict[str, dict], title_id: str, title_name: str, reason: str) -> None:
-    title_id = str(title_id or "").strip()
-    if not title_id:
-        return
-
-    skipped_map[title_id] = {
-        "title": str(title_name or "").strip(),
-        "reason": str(reason or "").strip(),
-    }
-    _save_skipped_manga_map(skipped_map)
-
-
 def _bulk_running(context: ContextTypes.DEFAULT_TYPE) -> bool:
     return bool(context.application.bot_data.get(BOTDATA_BULK_RUNNING_KEY, False))
 
 
 def _set_bulk_running(context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
     context.application.bot_data[BOTDATA_BULK_RUNNING_KEY] = value
-
-
-def _is_missing(value: Any) -> bool:
-    if value is None:
-        return True
-
-    text = str(value).strip()
-    return text in {"", "?", "N/A", "None", "null", "0"}
-
-
-def _clean_url(value: Any) -> str:
-    return str(value or "").replace("\n", "").replace("\r", "").strip()
-
-
-def _looks_like_http_url(url: str) -> bool:
-    if not url or " " in url:
-        return False
-
-    try:
-        parsed = urlparse(url)
-    except Exception:
-        return False
-
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def _require_title_id(manga: dict) -> str:
-    value = str(manga.get("title_id") or "").strip()
-    if not value:
-        raise SkipMangaPost("Obra sem title_id.")
-    return value
-
-
-def _require_title(manga: dict) -> str:
-    title = _pick_main_title(manga)
-    if _is_missing(title) or title == "Sem título":
-        raise SkipMangaPost("Obra sem título válido.")
-    return title
-
-
-def _require_genres(manga: dict) -> list[str]:
-    genres = _filter_display_genres(_resolve_manga_genres(manga), limit=6)
-    if not genres:
-        raise SkipMangaPost("Obra sem gêneros válidos.")
-    return genres
-
-
-def _require_chapters(manga: dict) -> str:
-    chapters = (
-        manga.get("total_chapters")
-        or manga.get("chapter_count")
-        or manga.get("anilist_chapters")
-        or ""
-    )
-    if _is_missing(chapters):
-        raise SkipMangaPost("Obra sem total de capítulos.")
-    return str(chapters).strip()
-
-
-def _require_status(manga: dict) -> str:
-    raw = manga.get("status") or manga.get("anilist_status") or ""
-    value = _translate_status(raw)
-    if _is_missing(raw) or value == "N/A":
-        raise SkipMangaPost("Obra sem status.")
-    return value
-
-
-def _require_format(manga: dict) -> str:
-    raw = manga.get("format") or manga.get("type") or manga.get("anilist_format") or ""
-    value = _translate_format(raw)
-    if _is_missing(raw):
-        raise SkipMangaPost("Obra sem formato.")
-    return value
-
-
-def _require_year(manga: dict) -> str:
-    year = _resolve_year(manga)
-    if _is_missing(year):
-        raise SkipMangaPost("Obra sem ano.")
-    return year
-
-
-def _pick_valid_photo(manga: dict) -> str:
-    candidates = [
-        manga.get("origin_cover_url"),
-        manga.get("cover_url"),
-        manga.get("banner_url"),
-        manga.get("background_url"),
-    ]
-
-    for candidate in candidates:
-        url = _clean_url(candidate)
-        if url and _looks_like_http_url(url):
-            return url
-
-    raise SkipMangaPost("Foto inválida, ausente ou inacessível.")
-
-
-async def _build_validated_post_data(manga: dict) -> dict:
-    return {
-        "title_id": _require_title_id(manga),
-        "title": _require_title(manga),
-        "genres": _require_genres(manga),
-        "chapters": _require_chapters(manga),
-        "status": _require_status(manga),
-        "format_name": _require_format(manga),
-        "year": _require_year(manga),
-        "photo": _pick_valid_photo(manga),
-    }
-
-
-def _build_caption_from_validated(data: dict) -> str:
-    full_title = html.escape(str(data["title"])).upper()
-    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in data["genres"])
-
-    info_lines = [
-        f"<b>Gêneros:</b> <i>{html.escape(genres_text)}</i>",
-        f"<b>Formato:</b> <i>{html.escape(str(data['format_name']))}</i>",
-        f"<b>Capítulos:</b> <i>{html.escape(str(data['chapters']))}</i>",
-        f"<b>Ano:</b> <i>{html.escape(str(data['year']))}</i>",
-        f"<b>Status:</b> <i>{html.escape(str(data['status']))}</i>",
-    ]
-
-    return (
-        f"📚 <b>{full_title}</b>\n\n"
-        + "\n".join(info_lines)
-        + "\n\nMangás Brasil | @MangasBrasil"
-    )
-
-
-def _build_keyboard(manga: dict) -> InlineKeyboardMarkup:
-    title_id = manga.get("title_id") or ""
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📚 Ler obra", url=f"https://t.me/{BOT_USERNAME}?start=title_{title_id}")]]
-    )
 
 
 async def _safe_edit_status(message, text: str) -> None:
@@ -658,7 +552,7 @@ async def _send_divider(bot, destination) -> None:
                 return
             except Exception as error:
                 sticker_error = error
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.8)
 
         print("ERRO STICKER DIVISOR MANGÁ:", repr(sticker_error), sticker)
 
@@ -672,20 +566,43 @@ async def _send_divider(bot, destination) -> None:
 
 
 async def _send_manga_post(bot, destination, manga: dict) -> None:
-    data = await _build_validated_post_data(manga)
-    caption = _build_caption_from_validated(data)
-    keyboard = _build_keyboard({"title_id": data["title_id"]})
+    photo = (
+        manga.get("origin_cover_url")
+        or manga.get("cover_url")
+        or manga.get("banner_url")
+        or manga.get("background_url")
+        or None
+    )
 
-    try:
-        await bot.send_photo(
+    caption = _build_caption(manga)
+    keyboard = _build_keyboard(manga)
+
+    if photo:
+        try:
+            await bot.send_photo(
+                chat_id=destination,
+                photo=photo,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        except Exception as photo_error:
+            print("ERRO POSTMANGA FOTO:", repr(photo_error))
+            await bot.send_message(
+                chat_id=destination,
+                text=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+    else:
+        await bot.send_message(
             chat_id=destination,
-            photo=data["photo"],
-            caption=caption,
+            text=caption,
             parse_mode="HTML",
             reply_markup=keyboard,
+            disable_web_page_preview=True,
         )
-    except Exception as error:
-        raise SkipMangaPost(f"Falha ao enviar foto válida: {error!r}") from error
 
     await _send_divider(bot, destination)
 
@@ -731,23 +648,19 @@ def _title_ref_from_url(url: str) -> dict | None:
 
 
 async def _fetch_text(client: httpx.AsyncClient, url: str) -> str:
-    response = await client.get(url)
+    response = await client.get(url, follow_redirects=True)
     response.raise_for_status()
     return response.text
 
 
-async def _load_pending_title_refs(
-    posted_ids: set[str] | None = None,
-    skipped_ids: set[str] | None = None,
-) -> list[dict]:
-    posted = posted_ids or set()
-    skipped = skipped_ids or set()
+async def _load_pending_title_refs(limit: int | None = None) -> list[dict]:
+    posted = set(_load_posted_manga_ids())
     pending: list[dict] = []
     seen: set[str] = set()
 
     index_url = f"{CATALOG_SITE_BASE}/storage/sitemaps/sitemap-title-index.xml"
 
-    async with _new_http_client(BULK_HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=BULK_HTTP_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}) as client:
         index_xml = await _fetch_text(client, index_url)
         sitemap_urls = [u for u in _extract_xml_locs(index_xml) if u.lower().endswith(".xml")]
 
@@ -764,11 +677,14 @@ async def _load_pending_title_refs(
                     continue
 
                 title_id = ref["title_id"]
-                if title_id in seen or title_id in posted or title_id in skipped:
+                if title_id in seen or title_id in posted:
                     continue
 
                 seen.add(title_id)
                 pending.append(ref)
+
+                if limit is not None and len(pending) >= limit:
+                    return pending
 
     return pending
 
@@ -788,7 +704,7 @@ async def _resolve_payload_from_ref(ref: dict) -> dict | None:
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
         try:
-            bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=10.0)
+            bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=12.0)
         except Exception:
             bundle = None
 
@@ -804,17 +720,7 @@ async def _run_postallmangas(
     _set_bulk_running(context, True)
     try:
         destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or admin_chat_id)
-
-        posted_ids = _load_posted_manga_ids()
-        posted_set = set(posted_ids)
-
-        skipped_map = _load_skipped_manga_map()
-        skipped_set = set(skipped_map.keys())
-
-        refs = await _load_pending_title_refs(
-            posted_ids=posted_set,
-            skipped_ids=skipped_set,
-        )
+        refs = await _load_pending_title_refs(limit=limit)
 
         if not refs:
             await context.bot.send_message(
@@ -825,38 +731,32 @@ async def _run_postallmangas(
             )
             return
 
-        target_valid = limit
-        sent = 0
-        skipped = 0
-        failed = 0
-        processed = 0
-        total_refs = len(refs)
-
         status_message = await context.bot.send_message(
             chat_id=admin_chat_id,
             text=(
                 "🚀 <b>Postagem em lote iniciada.</b>\n\n"
-                f"<b>Referências pendentes:</b> <code>{total_refs}</code>\n"
-                f"<b>Meta válida:</b> <code>{target_valid if target_valid is not None else 'todas'}</code>\n"
-                f"<b>Intervalo:</b> <code>{BULK_DELAY_SECONDS:.0f}s</code>"
+                f"<b>Pendentes encontrados:</b> <code>{len(refs)}</code>\n"
+                f"<b>Intervalo:</b> <code>{int(BULK_DELAY_SECONDS)}s</code>"
             ),
             parse_mode="HTML",
             reply_to_message_id=reply_to_message_id,
         )
 
-        for ref in refs:
-            if target_valid is not None and sent >= target_valid:
-                break
+        posted_ids = _load_posted_manga_ids()
+        posted_set = set(posted_ids)
 
+        sent = 0
+        failed = 0
+        total = len(refs)
+
+        for index, ref in enumerate(refs, start=1):
             title_id = str(ref.get("title_id") or "").strip()
             title_name = str(ref.get("display_title") or ref.get("title") or "Mangá").strip()
-            processed += 1
-            sent_now = False
 
             try:
                 payload = await _resolve_payload_from_ref(ref)
                 if not payload:
-                    raise SkipMangaPost("Não consegui montar o payload da obra.")
+                    raise RuntimeError("Não consegui montar o payload da obra.")
 
                 await _send_manga_post(context.bot, destination, payload)
 
@@ -866,14 +766,6 @@ async def _run_postallmangas(
                     _save_posted_manga_ids(posted_ids)
 
                 sent += 1
-                sent_now = True
-
-            except SkipMangaPost as skip_error:
-                skipped += 1
-                _mark_manga_skipped(skipped_map, title_id, title_name, str(skip_error))
-                skipped_set.add(title_id)
-                print("POSTALLMANGAS PULADO:", repr(skip_error), title_id, title_name)
-
             except Exception as error:
                 failed += 1
                 print("ERRO POSTALLMANGAS:", repr(error), title_id, title_name)
@@ -883,39 +775,24 @@ async def _run_postallmangas(
                 (
                     "🚀 <b>Postagem em lote em andamento.</b>\n\n"
                     f"<b>Enviados:</b> <code>{sent}</code>\n"
-                    f"<b>Pulados:</b> <code>{skipped}</code>\n"
                     f"<b>Falhas:</b> <code>{failed}</code>\n"
-                    f"<b>Analisados:</b> <code>{processed}/{total_refs}</code>\n"
-                    f"<b>Meta válida:</b> <code>{target_valid if target_valid is not None else 'todas'}</code>\n"
+                    f"<b>Processados:</b> <code>{index}/{total}</code>\n"
                     f"<b>Atual:</b> <code>{html.escape(title_name)}</code>"
                 ),
             )
 
-            if target_valid is not None and sent >= target_valid:
-                break
-
-            if sent_now and processed < total_refs:
+            if index < total:
                 await asyncio.sleep(BULK_DELAY_SECONDS)
 
-        if target_valid is not None and sent < target_valid:
-            final_text = (
-                "⚠️ <b>Postagem em lote finalizada sem atingir a meta.</b>\n\n"
-                f"<b>Meta pedida:</b> <code>{target_valid}</code>\n"
-                f"<b>Enviados:</b> <code>{sent}</code>\n"
-                f"<b>Pulados:</b> <code>{skipped}</code>\n"
-                f"<b>Falhas:</b> <code>{failed}</code>\n"
-                f"<b>Analisados:</b> <code>{processed}/{total_refs}</code>"
-            )
-        else:
-            final_text = (
+        await _safe_edit_status(
+            status_message,
+            (
                 "✅ <b>Postagem em lote finalizada.</b>\n\n"
                 f"<b>Enviados:</b> <code>{sent}</code>\n"
-                f"<b>Pulados:</b> <code>{skipped}</code>\n"
                 f"<b>Falhas:</b> <code>{failed}</code>\n"
-                f"<b>Analisados:</b> <code>{processed}/{total_refs}</code>"
-            )
-
-        await _safe_edit_status(status_message, final_text)
+                f"<b>Total:</b> <code>{total}</code>"
+            ),
+        )
 
     finally:
         _set_bulk_running(context, False)
@@ -956,18 +833,12 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         results = await search_titles(query, limit=8)
         if not results:
-            await status_message.edit_text(
-                "❌ <b>Não encontrei esse mangá.</b>",
-                parse_mode="HTML",
-            )
+            await status_message.edit_text("❌ <b>Não encontrei esse mangá.</b>", parse_mode="HTML")
             return
 
         search_item = _pick_best_candidate(query, results)
         if not search_item or not search_item.get("title_id"):
-            await status_message.edit_text(
-                "❌ <b>Não consegui identificar a obra certa.</b>",
-                parse_mode="HTML",
-            )
+            await status_message.edit_text("❌ <b>Não consegui identificar a obra certa.</b>", parse_mode="HTML")
             return
 
         await status_message.edit_text(
@@ -987,7 +858,7 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bundle = get_cached_title_bundle(title_id)
         if bundle is None:
             try:
-                bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=10.0)
+                bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=12.0)
             except Exception:
                 bundle = None
 
@@ -1000,14 +871,6 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ <b>Postagem enviada com sucesso.</b>\n\n<code>{html.escape(manga.get('title') or query)}</code>",
             parse_mode="HTML",
         )
-
-    except SkipMangaPost as skip_error:
-        print("POSTMANGA PULADO:", repr(skip_error), query)
-        await status_message.edit_text(
-            f"⚠️ <b>Obra pulada.</b>\n\n{html.escape(str(skip_error))}",
-            parse_mode="HTML",
-        )
-
     except Exception as error:
         print("ERRO POSTMANGA:", repr(error))
         await status_message.edit_text(
@@ -1078,6 +941,6 @@ async def postallmangas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await message.reply_text(
             "🚀 <b>Fila de postagem em lote iniciada.</b>\n\n"
-            f"Vou continuar até postar <code>{limit}</code> mangás válidos.",
+            f"Vou postar <code>{limit}</code> mangás pendentes agora.",
             parse_mode="HTML",
         )
