@@ -122,6 +122,8 @@ def main() -> None:
     app.add_handler(CommandHandler("metricas", metricas))
     app.add_handler(CommandHandler("metricaslimpar", metricas_limpar))
     app.add_handler(InlineQueryHandler(inline_query))
+    app.add_handler(CommandHandler("postallmangas", postallmangas))
+    app.add_handler(CommandHandler("posttodosmangas", postallmangas))
 
     app.add_handler(CallbackQueryHandler(broadcast_callbacks, pattern=r"^bc\|"))
     app.add_handler(CallbackQueryHandler(referral_button, pattern=r"^noop_indicar$"))
