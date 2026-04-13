@@ -1699,69 +1699,114 @@ def get_cached_home_snapshot(limit: int = HOME_SECTION_LIMIT) -> dict[str, Any]:
 
 
 async def get_recent_chapters(limit: int = AUTO_POST_LIMIT) -> list[dict[str, Any]]:
-    raw_items = await get_title_search(
-        "getRecentChapterRead",
-        limit=max(1, int(limit)),
-        search_time=RECENT_CHAPTER_TIME,
-    )
+    target_limit = max(1, int(limit))
+    batch_size = max(24, target_limit * 4)
+    max_pages = max(3, min(10, (target_limit // 6) + 3))
+
+    def _normalize_lang(value: Any) -> str:
+        return _clean(value).lower().replace("_", "-")
+
+    def _is_ptbr_lang(value: Any) -> bool:
+        normalized = _normalize_lang(value)
+        return normalized in {"pt-br", "ptbr", "pt"}
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for item in raw_items:
-        title_id = item.get("title_id") or ""
-        chapter_id = item.get("chapter_id") or ""
-        chapter_url = item.get("chapter_url") or ""
+    for page in range(1, max_pages + 1):
+        raw_items = await get_title_search(
+            "getRecentlyUpdatedChapter",
+            limit=batch_size,
+            page=page,
+        )
+        if not raw_items:
+            break
 
-        if not chapter_id and title_id:
-            try:
-                chapter_payload = await get_chapter_list(title_id, PREFERRED_CHAPTER_LANG)
-            except Exception:
+        for item in raw_items:
+            title_id = item.get("title_id") or ""
+            chapter_id = item.get("chapter_id") or ""
+            chapter_url = item.get("chapter_url") or ""
+            title_url = item.get("url") or ""
+            chapter_number = item.get("latest_chapter") or item.get("chapter_number") or ""
+            chapter_data: dict[str, Any] | None = None
+
+            language = _normalize_lang(item.get("language"))
+            needs_detail_lookup = not _is_ptbr_lang(language)
+            if language and not _is_ptbr_lang(language):
                 continue
-            latest = flatten_chapters(chapter_payload, PREFERRED_CHAPTER_LANG)
-            if latest:
-                chapter_id = latest[0]["chapter_id"]
-                chapter_url = latest[0]["chapter_url"]
-                item["latest_chapter"] = latest[0]["chapter_number"]
 
-        if not chapter_id:
-            continue
+            if (not chapter_id or not chapter_number or not title_id or not title_url or needs_detail_lookup) and (chapter_url or chapter_id):
+                try:
+                    chapter_data = await get_chapter_details(chapter_url or chapter_id)
+                except Exception:
+                    chapter_data = None
 
-        _remember_chapter_title(chapter_id, title_id)
+            if needs_detail_lookup:
+                detail_lang = _normalize_lang((chapter_data or {}).get("chapter_language"))
+                if not _is_ptbr_lang(detail_lang):
+                    continue
+                language = detail_lang or "pt-br"
+            elif not language:
+                language = "pt-br"
 
-        key = chapter_id
-        if key in seen:
-            continue
-        seen.add(key)
-
-        chapter_number = item.get("latest_chapter") or ""
-        if not chapter_number and chapter_url:
-            try:
-                chapter_data = await get_chapter_details(chapter_url)
-                chapter_number = chapter_data.get("chapter_number") or ""
+            if chapter_data:
+                chapter_id = chapter_id or chapter_data.get("chapter_id") or ""
+                chapter_url = chapter_url or chapter_data.get("chapter_url") or ""
+                chapter_number = chapter_number or chapter_data.get("chapter_number") or ""
+                title_id = title_id or chapter_data.get("title_id") or ""
+                title_url = title_url or chapter_data.get("title_url") or ""
                 if not item.get("title"):
                     item["title"] = chapter_data.get("title") or item.get("title")
-                if title_id and not item.get("url") and chapter_data.get("title_url"):
-                    item["url"] = chapter_data["title_url"]
-            except Exception:
-                pass
+                item["cover_url"] = item.get("cover_url") or chapter_data.get("cover_url") or item.get("cover_url") or ""
 
-        results.append(
-            {
-                "title_id": title_id,
-                "title": item.get("title") or "Manga",
-                "display_title": item.get("display_title") or item.get("title") or "Manga",
-                "cover_url": item.get("cover_url") or "",
-                "background_url": item.get("background_url") or item.get("cover_url") or "",
-                "status": item.get("status") or "",
-                "updated_at": item.get("updated_at") or "",
-                "chapter_id": chapter_id,
-                "chapter_url": chapter_url,
-                "chapter_number": chapter_number,
-            }
-        )
+            if not chapter_id and title_id:
+                try:
+                    chapter_payload = await get_chapter_list(title_id, "pt-br")
+                except Exception:
+                    continue
+                latest = flatten_chapters(chapter_payload, "pt-br")
+                if latest:
+                    chapter_id = latest[0]["chapter_id"]
+                    chapter_url = latest[0]["chapter_url"]
+                    chapter_number = chapter_number or latest[0]["chapter_number"]
 
-    return results[: max(1, int(limit))]
+            if not chapter_id:
+                continue
+
+            _remember_chapter_title(chapter_id, title_id)
+
+            key = f"{title_id}:{chapter_id}" if title_id else chapter_id
+            if key in seen:
+                continue
+            seen.add(key)
+
+            title = item.get("title") or item.get("display_title") or "Manga"
+            display_title = item.get("display_title") or title
+
+            results.append(
+                {
+                    "title_id": title_id,
+                    "title": title,
+                    "display_title": display_title,
+                    "cover_url": item.get("cover_url") or "",
+                    "background_url": item.get("background_url") or item.get("cover_url") or "",
+                    "status": item.get("status") or "",
+                    "updated_at": item.get("updated_at") or "",
+                    "chapter_id": chapter_id,
+                    "chapter_url": chapter_url,
+                    "chapter_number": chapter_number,
+                    "language": language or "pt-br",
+                    "url": title_url,
+                }
+            )
+
+            if len(results) >= target_limit:
+                return results[:target_limit]
+
+        if len(raw_items) < batch_size:
+            break
+
+    return results[:target_limit]
 
 
 async def warm_catalog_cache(*, include_home: bool = True) -> None:
