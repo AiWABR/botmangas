@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import re
 import unicodedata
 from typing import Any
@@ -246,6 +247,142 @@ def _filter_display_genres(items: list[str], limit: int = 6) -> list[str]:
     return output
 
 
+def _extract_meta_content(raw_html: str, prop: str) -> str:
+    if not raw_html:
+        return ""
+    pattern = (
+        r'<meta[^>]+(?:property|name)=["\']'
+        + re.escape(prop)
+        + r'["\'][^>]+content=["\']([^"\']+)["\']'
+    )
+    match = re.search(pattern, raw_html, flags=re.I)
+    return html.unescape(match.group(1)).strip() if match else ""
+
+
+def _extract_json_ld_images(raw_html: str) -> list[str]:
+    urls: list[str] = []
+    if not raw_html:
+        return urls
+
+    matches = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        raw_html,
+        flags=re.I | re.S,
+    )
+
+    for block in matches:
+        block = block.strip()
+        if not block:
+            continue
+        try:
+            payload = json.loads(block)
+        except Exception:
+            continue
+
+        def walk(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key in {"thumbnailUrl", "contentUrl", "url"} and isinstance(value, str):
+                        if value.startswith("http"):
+                            urls.append(value)
+                    else:
+                        walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item)
+
+        walk(payload)
+
+    return urls
+
+
+def _extract_badges_from_html(raw_html: str) -> list[str]:
+    if not raw_html:
+        return []
+    matches = re.findall(
+        r'data-tag-id="[^"]+"[^>]*>([^<]+)</span>',
+        raw_html,
+        flags=re.I,
+    )
+    return _unique_keep_order([html.unescape(x).strip() for x in matches if x.strip()])
+
+
+def _resolve_manga_genres(manga: dict) -> list[str]:
+    candidates: list[str] = []
+
+    for key in (
+        "genres",
+        "genre_names",
+        "tags",
+        "tag_names",
+        "anilist_genres",
+        "anilist_tags",
+        "mangaball_genres",
+        "mangaball_tags",
+        "categories",
+        "keywords",
+    ):
+        candidates.extend(_flatten_strings(manga.get(key)))
+
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+    candidates.extend(_extract_badges_from_html(raw_html))
+
+    return _unique_keep_order(candidates)
+
+
+def _resolve_origin_photo(manga: dict) -> str:
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+
+    candidates = [
+        manga.get("origin_cover_url"),
+        manga.get("site_cover_url"),
+        manga.get("source_cover_url"),
+        manga.get("og_image"),
+        _extract_meta_content(raw_html, "og:image"),
+        * _extract_json_ld_images(raw_html),
+        manga.get("banner_url"),
+        manga.get("cover_url"),
+        manga.get("background_url"),
+    ]
+
+    for candidate in candidates:
+        url = str(candidate or "").strip()
+        if url.startswith("http"):
+            return url
+    return ""
+
+
+def _resolve_description(manga: dict) -> str:
+    raw_html = (
+        manga.get("raw_html")
+        or manga.get("html")
+        or manga.get("page_html")
+        or manga.get("title_html")
+        or ""
+    )
+
+    description = (
+        manga.get("description")
+        or manga.get("anilist_description")
+        or _extract_meta_content(raw_html, "description")
+        or _extract_meta_content(raw_html, "og:description")
+        or ""
+    )
+    return _clean_description(description)
+
+
 def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None = None) -> dict:
     merged = dict(overview or {})
     if bundle:
@@ -268,41 +405,32 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
         if latest:
             merged["latest_chapter"] = latest
 
+    origin_cover = _resolve_origin_photo(merged)
+    if origin_cover:
+        merged["origin_cover_url"] = origin_cover
+
+    description = _resolve_description(merged)
+    if description:
+        merged["description"] = description
+
+    genres = _resolve_manga_genres(merged)
+    if genres:
+        merged["genres"] = genres
+
     return merged
-
-
-def _resolve_manga_genres(manga: dict) -> list[str]:
-    candidates: list[str] = []
-
-    for key in (
-        "genres",
-        "genre_names",
-        "tags",
-        "tag_names",
-        "anilist_genres",
-        "anilist_tags",
-        "mangaball_genres",
-        "mangaball_tags",
-        "categories",
-        "keywords",
-    ):
-        candidates.extend(_flatten_strings(manga.get(key)))
-
-    return _unique_keep_order(candidates)
 
 
 def _build_caption(manga: dict) -> str:
     full_title = html.escape(_pick_main_title(manga)).upper()
-
     genres = _filter_display_genres(_resolve_manga_genres(manga), limit=6)
-    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in genres) if genres else "N/A"
+    genres_text = ", ".join(f"#{genre.replace(' ', '_')}" for genre in genres) if genres else "N/A"
     genres_text = html.escape(genres_text)
 
     chapters = manga.get("total_chapters") or manga.get("anilist_chapters") or "?"
     status = _translate_status(manga.get("status") or manga.get("anilist_status") or "N/A")
     format_name = _translate_format(manga.get("format") or manga.get("type") or manga.get("anilist_format") or "")
     description = html.escape(
-        _truncate_text(_clean_description(manga.get("description") or manga.get("anilist_description") or ""), 320)
+        _truncate_text(_resolve_description(manga), 320)
     )
 
     return (
@@ -395,7 +523,13 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bundle = None
 
         manga = _merge_post_payload(overview, search_item, bundle)
-        photo = manga.get("banner_url") or manga.get("cover_url") or manga.get("background_url") or None
+        photo = (
+            manga.get("origin_cover_url")
+            or manga.get("banner_url")
+            or manga.get("cover_url")
+            or manga.get("background_url")
+            or None
+        )
         caption = _build_caption(manga)
         keyboard = _build_keyboard(manga)
         destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or message.chat_id)
