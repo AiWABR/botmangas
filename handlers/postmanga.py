@@ -36,6 +36,31 @@ FORMAT_PT_MAP = {
     "NOVEL": "Novel",
 }
 
+BLOCKED_GENRE_EXACT = {
+    "based on a korean novel",
+    "based on a novel",
+    "based on a web novel",
+    "based on a light novel",
+    "based on a webtoon",
+    "based on a manhwa",
+    "based on a manhua",
+    "based on an anime",
+    "based on a game",
+    "based on a video game",
+    "based on a movie",
+    "based on a tv series",
+    "adaptation",
+}
+
+BLOCKED_GENRE_PATTERNS = [
+    r"^based on\b",
+    r"\bnovel\b",
+    r"\bweb novel\b",
+    r"\bkorean novel\b",
+    r"\blight novel\b",
+    r"\badaptation\b",
+]
+
 
 def _truncate_text(text: str, limit: int = 320) -> str:
     text = (text or "").strip()
@@ -174,6 +199,52 @@ def _unique_keep_order(items: list[str]) -> list[str]:
             continue
         seen.add(norm)
         output.append(clean)
+
+    return output
+
+
+def _prettify_tag(value: str) -> str:
+    value = html.unescape(str(value or "").strip())
+    value = value.replace("_", " ")
+    value = re.sub(r"\s+", " ", value).strip(" -#")
+    return value
+
+
+def _is_valid_display_genre(value: str) -> bool:
+    raw = _prettify_tag(value)
+    norm = _normalize_text(raw)
+
+    if not norm:
+        return False
+
+    if norm in BLOCKED_GENRE_EXACT:
+        return False
+
+    for pattern in BLOCKED_GENRE_PATTERNS:
+        if re.search(pattern, norm, flags=re.I):
+            return False
+
+    return True
+
+
+def _filter_display_genres(items: list[str], limit: int = 6) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+
+    for item in items or []:
+        pretty = _prettify_tag(item)
+        norm = _normalize_text(pretty)
+
+        if not _is_valid_display_genre(pretty):
+            continue
+        if norm in seen:
+            continue
+
+        seen.add(norm)
+        output.append(pretty)
+
+        if len(output) >= limit:
+            break
 
     return output
 
@@ -387,8 +458,8 @@ def _merge_post_payload(overview: dict, search_item: dict, bundle: dict | None =
 def _build_caption(manga: dict) -> str:
     full_title = html.escape(_pick_main_title(manga)).upper()
 
-    genres = _resolve_manga_genres(manga)
-    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in genres[:6]) if genres else "N/A"
+    genres = _filter_display_genres(_resolve_manga_genres(manga), limit=6)
+    genres_text = ", ".join(f"#{g.replace(' ', '_')}" for g in genres) if genres else "N/A"
 
     chapters = (
         manga.get("total_chapters")
