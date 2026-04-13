@@ -38,8 +38,8 @@ def _save_posted(items: list[str]) -> None:
 
 
 def _deep_link(chapter_id: str, title_id: str = "") -> str:
-    payload = f"{chapter_id}_{title_id}" if title_id else chapter_id
-    return f"https://t.me/{BOT_USERNAME}?start=ch_{payload}"
+    resolved_chapter_id = str(chapter_id).strip()
+    return f"https://t.me/{BOT_USERNAME}?start=ch_{resolved_chapter_id}"
 
 
 def _title_link(title_id: str) -> str:
