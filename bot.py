@@ -32,6 +32,7 @@ from handlers.start import start
 from services.catalog_client import schedule_warm_catalog_cache, warm_catalog_cache
 from services.metrics import init_metrics_db
 from services.referral_db import init_referral_db
+from handlers.postmanga import postmanga, postallmangas
 
 init_metrics_db()
 init_referral_db()
