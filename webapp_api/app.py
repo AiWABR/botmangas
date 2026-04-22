@@ -24,7 +24,7 @@ from services.catalog_client import (
     search_titles,
 )
 from services.media_pipeline import resolve_telegraph_asset_path
-from services.metrics import get_last_read_entry, mark_chapter_read
+from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 
 MINIAPP_DIR = BASE_DIR / "miniapp"
 PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
@@ -198,6 +198,10 @@ def _has_real_chapter(item: dict[str, Any]) -> bool:
     return bool((item.get("chapter_id") or "").strip())
 
 
+def _has_title_id(item: dict[str, Any]) -> bool:
+    return bool((item.get("title_id") or "").strip())
+
+
 def _public_title_item(item: dict[str, Any]) -> dict[str, Any]:
     latest_value = item.get("latest_chapter")
     if isinstance(latest_value, dict):
@@ -282,6 +286,45 @@ def _public_reader_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "previous_chapter": _public_chapter(payload.get("previous_chapter")),
         "next_chapter": _public_chapter(payload.get("next_chapter")),
     }
+
+
+def _public_history_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title_id": item.get("title_id") or "",
+        "title": item.get("title") or item.get("title_name") or "",
+        "chapter_id": item.get("chapter_id") or "",
+        "chapter_number": item.get("chapter_number") or "",
+        "updated_at": item.get("updated_at") or "",
+    }
+
+
+def _sort_title_cards(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items.sort(
+        key=lambda item: (
+            item.get("updated_at") or "",
+            item.get("chapter_number") or item.get("latest_chapter") or "",
+            item.get("title") or "",
+        ),
+        reverse=True,
+    )
+    return items
+
+
+def _dedupe_public_titles(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    clean: list[dict[str, Any]] = []
+
+    for item in items:
+        if not _has_title_id(item):
+            continue
+        public = _public_title_item(item)
+        title_id = public.get("title_id") or ""
+        if not title_id or title_id in seen:
+            continue
+        seen.add(title_id)
+        clean.append(public)
+
+    return clean
 
 
 def _normalize_query(text: str) -> str:
@@ -405,6 +448,47 @@ async def _home_payload(limit: int) -> dict[str, Any]:
     return await _stale_while_revalidate("home", _HOME_TTL, _HOME_TTL * 3, producer, limit=limit)
 
 
+async def _recent_chapters_payload(limit: int) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        raw_items = await get_recent_chapters(limit=max(limit, 12))
+        clean = [_public_title_item(item) for item in raw_items if _has_real_chapter(item)]
+        return {"items": _sort_title_cards(clean)[:limit]}
+
+    return await _stale_while_revalidate("recent_chapters", _RECENT_TTL, _RECENT_TTL * 3, producer, limit=limit)
+
+
+async def _explore_payload(limit: int) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        featured, popular, recent_titles, latest_titles, recent_chapters = await asyncio.gather(
+            get_title_search("getFeatured", limit=min(limit, 24)),
+            get_title_search("getPopular", limit=limit),
+            get_title_search("getRecentRead", limit=limit, search_time="week"),
+            get_title_search("getLatestTable", limit=limit),
+            get_recent_chapters(limit=max(limit, 48)),
+        )
+
+        merged = _dedupe_public_titles(
+            [
+                *(featured or []),
+                *(popular or []),
+                *(recent_titles or []),
+                *(latest_titles or []),
+                *(recent_chapters or []),
+            ]
+        )
+        return {"items": _sort_title_cards(merged)[:limit]}
+
+    return await _stale_while_revalidate("explore", _SECTIONS_TTL, _SECTIONS_TTL * 3, producer, limit=limit)
+
+
+async def _history_payload(user_id: str, limit: int) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        items = get_recently_read(user_id, limit=max(limit, 1))
+        return {"items": [_public_history_item(item) for item in items[:limit]]}
+
+    return await _cached("history", _RECENT_TTL, producer, user_id=user_id, limit=limit)
+
+
 async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[str, Any]:
     async def producer() -> dict[str, Any]:
         bundle = await get_title_bundle(title_id, lang)
@@ -437,6 +521,21 @@ async def api_home(limit: int = Query(HOME_SECTION_LIMIT, ge=4, le=24)):
 @app.get("/api/search")
 async def api_search(q: str = Query("", min_length=1), limit: int = Query(12, ge=1, le=24)):
     return await _search_with_suggestions(q, limit)
+
+
+@app.get("/api/recent-chapters")
+async def api_recent_chapters(limit: int = Query(72, ge=12, le=240)):
+    return await _recent_chapters_payload(limit=limit)
+
+
+@app.get("/api/explore")
+async def api_explore(limit: int = Query(120, ge=24, le=240)):
+    return await _explore_payload(limit=limit)
+
+
+@app.get("/api/history")
+async def api_history(user_id: str = Query(..., min_length=1), limit: int = Query(30, ge=1, le=100)):
+    return await _history_payload(user_id=user_id, limit=limit)
 
 
 @app.get("/api/sections/{section_name}")
