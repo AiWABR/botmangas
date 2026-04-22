@@ -43,6 +43,7 @@
       --shadow-md: 0 8px 32px rgba(0,0,0,0.6);
       --shadow-lg: 0 20px 60px rgba(0,0,0,0.7);
       --topbar-h: 56px;
+      --navbar-h: 74px;
       --max-w: 1440px;
       --r-xs: 7px;
       --r-sm: 11px;
@@ -132,13 +133,11 @@
     }
 
     .icon-btn {
-      width: 34px;
-      height: 34px;
+      width: 34px; height: 34px;
       border-radius: 9px;
       background: var(--glass);
       border: 1px solid var(--line);
-      display: grid;
-      place-items: center;
+      display: grid; place-items: center;
       flex-shrink: 0;
       transition: background .18s, transform .15s var(--ease), border-color .18s;
       color: var(--text2);
@@ -146,7 +145,6 @@
     .icon-btn:hover { background: var(--glass2); color: var(--text); border-color: var(--line2); }
     .icon-btn:active { transform: scale(0.88); }
     .icon-btn.hidden { display: none; }
-    .icon-btn.active-fav { color: var(--rose); border-color: rgba(255,79,123,.3); background: rgba(255,79,123,.08); }
 
     .brand { display: flex; align-items: center; gap: 8px; cursor: pointer; flex-shrink: 0; min-width: 0; }
     .brand-logo {
@@ -181,19 +179,109 @@
     .search-clear-btn { background: none; border: 0; cursor: pointer; color: var(--text3); font-size: 13px; padding: 0; display: none; flex-shrink: 0; line-height: 1; }
     .search-clear-btn.visible { display: block; }
 
+    /* ── FLOATING BOTTOM NAVBAR ── */
+    .bottom-nav {
+      position: fixed;
+      bottom: calc(12px + var(--safe-b));
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 300;
+      background: rgba(18, 20, 36, 0.96);
+      backdrop-filter: blur(28px) saturate(180%);
+      -webkit-backdrop-filter: blur(28px) saturate(180%);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 999px;
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.4);
+      width: min(calc(100vw - 28px), 480px);
+    }
+
+    .nav-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 54px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background .2s var(--ease);
+      position: relative;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    .nav-item.active {
+      background: rgba(255,255,255,0.10);
+    }
+
+    .nav-item:active { transform: scale(0.93); }
+
+    .nav-icon {
+      width: 22px; height: 22px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .nav-icon svg {
+      width: 22px; height: 22px;
+      stroke: rgba(255,255,255,0.38);
+      fill: none;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      transition: stroke .2s;
+    }
+
+    .nav-item.active .nav-icon svg { stroke: #fff; }
+
+    .nav-label {
+      font-family: var(--font-b);
+      font-size: 10px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.35);
+      letter-spacing: 0.01em;
+      line-height: 1;
+      transition: color .2s;
+      white-space: nowrap;
+    }
+
+    .nav-item.active .nav-label { color: #fff; }
+
+    /* Badge on nav icon */
+    .nav-badge {
+      position: absolute;
+      top: -3px; right: -5px;
+      min-width: 16px; height: 16px;
+      background: #ef4444;
+      border-radius: 999px;
+      border: 2px solid rgba(18,20,36,0.96);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; font-weight: 800; color: #fff;
+      font-family: var(--font-b);
+      padding: 0 3px;
+      opacity: 0;
+      transform: scale(0.6);
+      transition: opacity .2s var(--ease-spring), transform .2s var(--ease-spring);
+    }
+    .nav-badge.visible { opacity: 1; transform: scale(1); }
+
     /* ── PAGES ── */
     .page {
       max-width: var(--max-w);
       margin: 0 auto;
-      padding: calc(var(--topbar-h) + var(--safe-t) + 16px) 14px calc(40px + var(--safe-b));
+      padding: calc(var(--topbar-h) + var(--safe-t) + 16px) 14px calc(var(--navbar-h) + 40px + var(--safe-b));
     }
     .page.hidden { display: none !important; }
     .page.reader-page { padding-left: 0; padding-right: 0; max-width: 100%; }
-    .page.fav-page { max-width: var(--max-w); }
 
-    /* ── PAGE TRANSITIONS ── */
-    .page-enter { animation: pageIn .25s var(--ease) both; }
-    @keyframes pageIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    .page-enter { animation: pageIn .22s var(--ease) both; }
+    @keyframes pageIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
     /* ── HERO ── */
     .hero-banner {
@@ -237,9 +325,7 @@
       cursor: pointer; transition: all .18s var(--ease); white-space: nowrap;
       position: relative; overflow: hidden;
     }
-    .btn::after { content: ''; position: absolute; inset: 0; background: rgba(255,255,255,0); transition: background .15s; }
     .btn:hover { background: var(--glass2); border-color: var(--line2); transform: translateY(-1px); }
-    .btn:hover::after { background: rgba(255,255,255,.03); }
     .btn:active { transform: scale(0.97); }
     .btn:disabled { opacity: .4; pointer-events: none; }
     .btn-primary { background: var(--grad2); border: none; color: #fff; box-shadow: 0 4px 16px var(--glow); }
@@ -247,25 +333,20 @@
     .btn-ghost { background: transparent; }
     .btn-sm { height: 34px; padding: 0 12px; font-size: 12px; border-radius: var(--r-xs); }
     .btn-fav { background: var(--grad-fav); border: none; color: #fff; box-shadow: 0 4px 16px var(--glow-fav); }
-    .btn-fav:hover { opacity: .94; box-shadow: 0 6px 24px var(--glow-fav); }
 
-    /* ── CONTINUE READING – simple scroll ── */
+    /* ── CONTINUE READING ── */
     .continue-section { margin-bottom: 24px; }
-    /* hero card removed */
-
     .cw-scroll { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.08) transparent; }
     .cw-scroll::-webkit-scrollbar { height: 3px; }
-    .cw-scroll::-webkit-scrollbar-track { background: transparent; }
     .cw-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
     .cw-card {
       flex-shrink: 0; width: 150px;
       border-radius: var(--r-md); overflow: hidden;
       background: var(--bg3); border: 1px solid var(--line);
       cursor: pointer; transition: transform .2s var(--ease), border-color .2s;
-      will-change: transform;
     }
     .cw-card:hover { transform: translateY(-3px); border-color: rgba(79,125,255,.35); }
-    .cw-thumb { position: relative; aspect-ratio: 2/3; background: var(--bg4); overflow: hidden; border-radius: 0; }
+    .cw-thumb { position: relative; aspect-ratio: 2/3; background: var(--bg4); overflow: hidden; }
     .cw-thumb img { width: 100%; height: 100%; object-fit: cover; transition: transform .4s var(--ease); }
     .cw-card:hover .cw-thumb img { transform: scale(1.07); }
     .cw-prog { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,.1); }
@@ -323,7 +404,6 @@
       cursor: pointer;
       transition: transform .2s var(--ease), border-color .2s, box-shadow .2s;
       position: relative;
-      will-change: transform;
     }
     .manga-card:hover { transform: translateY(-4px); border-color: rgba(79,125,255,.38); box-shadow: var(--shadow-md); }
     .manga-card:active { transform: scale(0.98); }
@@ -335,7 +415,6 @@
     .card-badge { position: absolute; top: 7px; left: 7px; z-index: 2; background: rgba(6,8,16,.82); border: 1px solid var(--line); backdrop-filter: blur(8px); padding: 3px 7px; border-radius: 999px; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--text2); }
     .card-badge.adult { color: #fda4af; border-color: rgba(244,63,94,.25); }
 
-    /* Favorite button on card */
     .card-fav-btn {
       position: absolute; top: 7px; right: 7px; z-index: 3;
       width: 28px; height: 28px; border-radius: 50%;
@@ -344,12 +423,10 @@
       display: grid; place-items: center;
       font-size: 13px; cursor: pointer;
       transition: all .2s var(--ease-spring);
-      opacity: 0;
-      transform: scale(0.8);
+      opacity: 0; transform: scale(0.8);
     }
     .manga-card:hover .card-fav-btn { opacity: 1; transform: scale(1); }
     .card-fav-btn.faved { opacity: 1; transform: scale(1); background: rgba(255,79,123,.15); border-color: rgba(255,79,123,.4); }
-    .card-fav-btn.faved:hover { transform: scale(1.15); }
     .card-fav-btn:active { transform: scale(0.88) !important; }
 
     .card-play-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(6,8,16,.38); opacity: 0; transition: opacity .18s; z-index: 2; }
@@ -360,37 +437,136 @@
     .card-body { padding: 10px 11px 12px; }
     .card-title { font-size: 13px; font-weight: 700; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 35px; margin-bottom: 4px; }
     .card-meta { color: var(--text3); font-size: 11px; line-height: 1.4; display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
-
-    /* Read progress bar on card */
     .card-read-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,.06); }
     .card-read-fill { height: 100%; background: var(--grad); border-radius: 0 2px 2px 0; }
 
-    /* ── FAVORITES PAGE ── */
-    .fav-page-header {
-      margin-bottom: 24px;
-      display: flex; align-items: center; gap: 14px;
-      padding: 20px; border-radius: var(--r-xl);
-      background: linear-gradient(135deg, rgba(255,79,123,.08) 0%, rgba(255,179,71,.08) 100%);
-      border: 1px solid rgba(255,79,123,.18);
+    /* ── BIBLIOTECA PAGE (favoritos como grid) ── */
+    .lib-page-header {
+      margin-bottom: 20px;
     }
-    .fav-page-icon { font-size: 36px; }
-    .fav-page-title { font-family: var(--font-d); font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
-    .fav-page-subtitle { color: var(--text2); font-size: 13px; margin-top: 3px; }
+    .lib-page-title { font-family: var(--font-d); font-size: 26px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 4px; }
+    .lib-page-sub { color: var(--text2); font-size: 13px; }
 
-    .fav-pagination {
-      display: flex; align-items: center; justify-content: center;
-      gap: 8px; margin-top: 20px;
+    /* ── NOVIDADES PAGE ── */
+    .updates-page-header { margin-bottom: 20px; }
+    .updates-empty {
+      border: 1px solid var(--line); border-radius: var(--r-lg);
+      background: rgba(255,255,255,.02); padding: 40px 20px; text-align: center; color: var(--text2);
     }
-    .fav-page-btn {
-      min-width: 36px; height: 36px; border-radius: 9px;
-      background: var(--glass); border: 1px solid var(--line);
-      color: var(--text2); font-size: 13px; font-weight: 700;
-      display: grid; place-items: center; cursor: pointer;
-      transition: all .18s var(--ease);
+    .updates-empty-icon { font-size: 36px; margin-bottom: 12px; }
+    .updates-empty-title { font-family: var(--font-d); font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+    .updates-empty-text { font-size: 13px; line-height: 1.6; }
+
+    .update-item {
+      display: flex; align-items: center; gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+      transition: opacity .15s;
     }
-    .fav-page-btn:hover { background: var(--glass2); color: var(--text); border-color: var(--line2); }
-    .fav-page-btn.active { background: var(--grad-fav); border: none; color: #fff; box-shadow: 0 3px 12px var(--glow-fav); }
-    .fav-page-btn:disabled { opacity: .35; pointer-events: none; }
+    .update-item:last-child { border-bottom: none; }
+    .update-item:hover { opacity: .8; }
+    .update-item:active { opacity: .6; }
+    .update-cover {
+      width: 52px; height: 74px; border-radius: 8px;
+      background: var(--bg4); overflow: hidden; flex-shrink: 0;
+      border: 1px solid var(--line);
+    }
+    .update-cover img { width: 100%; height: 100%; object-fit: cover; }
+    .update-info { flex: 1; min-width: 0; }
+    .update-title { font-size: 14px; font-weight: 700; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .update-chapter { font-size: 12.5px; color: var(--teal); font-weight: 700; margin-bottom: 4px; }
+    .update-time { font-size: 11.5px; color: var(--text3); }
+    .update-new-badge {
+      flex-shrink: 0; padding: 3px 9px; border-radius: 999px;
+      background: rgba(79,125,255,.15); border: 1px solid rgba(79,125,255,.3);
+      color: var(--accent3); font-size: 10px; font-weight: 800;
+    }
+
+    /* ── HISTORICO PAGE ── */
+    .history-page-header { margin-bottom: 20px; }
+    .history-controls { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .history-list { display: flex; flex-direction: column; }
+
+    .history-item {
+      display: flex; align-items: center; gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+      transition: opacity .15s;
+      position: relative;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { opacity: .8; }
+    .history-item:active { opacity: .6; }
+
+    .history-cover {
+      width: 56px; height: 80px; border-radius: 9px;
+      background: var(--bg4); overflow: hidden; flex-shrink: 0;
+      border: 1px solid var(--line); position: relative;
+    }
+    .history-cover img { width: 100%; height: 100%; object-fit: cover; }
+    .history-cover-prog {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 3px;
+      background: rgba(255,255,255,.1);
+    }
+    .history-cover-prog-fill { height: 100%; background: var(--grad); }
+
+    .history-info { flex: 1; min-width: 0; }
+    .history-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .history-chapter { font-size: 12.5px; font-weight: 700; color: var(--text2); margin-bottom: 5px; }
+    .history-meta { display: flex; flex-direction: column; gap: 2px; }
+    .history-meta-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text3); }
+    .history-meta-row svg { width: 12px; height: 12px; stroke: var(--text3); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .history-del-btn {
+      width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0;
+      display: grid; place-items: center;
+      color: var(--text3); font-size: 15px;
+      opacity: 0; transition: opacity .15s;
+      cursor: pointer;
+    }
+    .history-item:hover .history-del-btn { opacity: 1; }
+
+    /* ── PERFIL PAGE ── */
+    .profile-page { padding-top: 0; }
+    .profile-hero {
+      padding: calc(var(--topbar-h) + var(--safe-t) + 20px) 14px 20px;
+      display: flex; align-items: center; gap: 16px;
+      border-bottom: 1px solid var(--line); margin-bottom: 20px;
+    }
+    .profile-avatar {
+      width: 68px; height: 68px; border-radius: 50%;
+      background: var(--grad); flex-shrink: 0;
+      display: grid; place-items: center;
+      font-family: var(--font-d); font-size: 26px; font-weight: 800; color: #fff;
+      border: 2px solid rgba(79,125,255,.4);
+      overflow: hidden; position: relative;
+    }
+    .profile-avatar img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+    .profile-name { font-family: var(--font-d); font-size: 20px; font-weight: 800; letter-spacing: -.03em; margin-bottom: 3px; }
+    .profile-id { color: var(--text3); font-size: 12px; font-weight: 600; }
+
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+      padding: 0 14px; margin-bottom: 20px;
+    }
+    .stat-card {
+      background: var(--bg3); border: 1px solid var(--line);
+      border-radius: var(--r-md); padding: 14px 16px;
+    }
+    .stat-value { font-family: var(--font-d); font-size: 28px; font-weight: 800; letter-spacing: -.04em; margin-bottom: 4px; }
+    .stat-label { font-size: 12px; color: var(--text3); font-weight: 600; }
+
+    .profile-section { padding: 0 14px; margin-bottom: 24px; }
+    .profile-section-title { font-family: var(--font-d); font-size: 14px; font-weight: 800; letter-spacing: -.02em; color: var(--text2); margin-bottom: 10px; text-transform: uppercase; font-size: 11px; letter-spacing: .08em; }
+    .profile-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 13px 0; border-bottom: 1px solid var(--line);
+    }
+    .profile-row:last-child { border-bottom: none; }
+    .profile-row-label { font-size: 14px; font-weight: 600; color: var(--text2); }
+    .profile-row-value { font-size: 14px; font-weight: 700; color: var(--text); }
 
     /* ── DETAIL PAGE ── */
     .detail-panel { background: rgba(255,255,255,.025); border: 1px solid var(--line); border-radius: var(--r-xl); overflow: hidden; box-shadow: var(--shadow-lg); }
@@ -415,7 +591,6 @@
     .detail-actions { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 16px; }
     .detail-body { padding: 20px; }
 
-    /* Favorite button in detail */
     .fav-heart-btn {
       height: 40px; padding: 0 16px; border-radius: var(--r-sm);
       background: var(--glass); border: 1px solid var(--line);
@@ -460,9 +635,9 @@
     .reader-pages { display: flex; flex-direction: column; gap: 0; width: 100%; }
     .reader-page-item { width: 100%; margin: 0; padding: 0; border: none; border-radius: 0; background: #000; display: block; position: relative; line-height: 0; }
     .reader-page-item img { width: 100%; height: auto; display: block; }
-    .page-label { position: absolute; bottom: 8px; right: 10px; background: rgba(0,0,0,.55); color: rgba(255,255,255,.45); font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 5px; pointer-events: none; backdrop-filter: blur(4px); }
+    .page-label { position: absolute; bottom: 8px; right: 10px; background: rgba(0,0,0,.55); color: rgba(255,255,255,.45); font-size: 10px; font-weight: 700; padding: 3px 7px; border-radius: 5px; pointer-events: none; }
 
-    .reader-footer { margin: 16px auto calc(40px + var(--safe-b)); padding: 14px; border-radius: 16px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+    .reader-footer { margin: 16px auto calc(var(--navbar-h) + 40px + var(--safe-b)); padding: 14px; border-radius: 16px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
     .reader-footer-title { font-family: var(--font-d); font-size: 14px; font-weight: 800; color: var(--text2); text-align: center; }
     .reader-footer-nav { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; width: 100%; }
 
@@ -498,10 +673,10 @@
     .loading-text { color: var(--text2); font-size: 12.5px; line-height: 1.6; }
 
     /* ── TOAST ── */
-    .toast { position: fixed; left: 50%; bottom: calc(16px + var(--safe-b)); transform: translateX(-50%) translateY(16px); z-index: 400; min-width: min(88vw, 300px); max-width: min(92vw, 440px); padding: 10px 15px; border-radius: 12px; background: rgba(10,13,26,.96); border: 1px solid var(--line2); color: var(--text); box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: all .22s var(--ease); text-align: center; font-size: 13px; line-height: 1.4; }
+    .toast { position: fixed; left: 50%; bottom: calc(var(--navbar-h) + 20px + var(--safe-b)); transform: translateX(-50%) translateY(16px); z-index: 400; min-width: min(88vw, 300px); max-width: min(92vw, 440px); padding: 10px 15px; border-radius: 12px; background: rgba(10,13,26,.96); border: 1px solid var(--line2); color: var(--text); box-shadow: var(--shadow-lg); opacity: 0; pointer-events: none; transition: all .22s var(--ease); text-align: center; font-size: 13px; line-height: 1.4; }
     .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    /* ── FAV STAR ANIMATION ── */
+    /* ── FAV ANIM ── */
     @keyframes fav-pop { 0% { transform: scale(1); } 30% { transform: scale(1.5); } 60% { transform: scale(0.9); } 100% { transform: scale(1); } }
     .fav-popping { animation: fav-pop .4s var(--ease-spring) both; }
 
@@ -526,33 +701,44 @@
 </head>
 <body>
 <div class="app">
+
+  <!-- TOPBAR -->
   <header class="topbar" id="topbar">
     <div class="topbar-inner">
       <button class="icon-btn hidden" id="backBtn" title="Voltar">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
       </button>
-
       <div class="brand" id="brandBtn">
         <div class="brand-logo">M</div>
         <span class="brand-name">Baltigo</span>
       </div>
-
       <div class="topbar-search" id="topbarSearchBox">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         <input id="topbarSearchInput" placeholder="Buscar mangá..." autocomplete="off" />
         <button class="search-clear-btn" id="topbarSearchClear">✕</button>
       </div>
-
-      <button class="icon-btn" id="favTopBtn" title="Favoritos">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-      </button>
-      <button class="icon-btn" id="homeBtn" title="Início">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-      </button>
     </div>
   </header>
 
-  <!-- HOME PAGE -->
+  <!-- BIBLIOTECA PAGE -->
+  <main id="libPage" class="page hidden">
+    <div class="lib-page-header">
+      <div class="lib-page-title">Biblioteca</div>
+      <div class="lib-page-sub" id="libPageSub">Seus mangás favoritos</div>
+    </div>
+    <div id="libPageGrid"></div>
+  </main>
+
+  <!-- NOVIDADES PAGE -->
+  <main id="updatesPage" class="page hidden">
+    <div class="updates-page-header">
+      <div class="lib-page-title">Novidades</div>
+      <div class="lib-page-sub">Capítulos novos das obras que você favorita</div>
+    </div>
+    <div id="updatesPageList"></div>
+  </main>
+
+  <!-- EXPLORAR / HOME PAGE -->
   <main id="homePage" class="page">
     <section class="hero-banner" id="heroBanner">
       <div class="hero-bg" id="heroBg"></div>
@@ -575,7 +761,6 @@
       </div>
     </section>
 
-    <!-- Continue Reading – simple horizontal scroll like original -->
     <section class="continue-section hidden" id="continueSection">
       <div class="section-head">
         <div class="section-label">
@@ -589,22 +774,6 @@
       <div class="cw-scroll" id="continueList"></div>
     </section>
 
-    <!-- Favorites section -->
-    <section class="section hidden" id="favSection">
-      <div class="section-head">
-        <div class="section-label">
-          <div class="section-accent fav"></div>
-          <div>
-            <div class="section-title">⭐ Favoritos</div>
-            <div class="section-count" id="favCount">Seus mangás favoritos</div>
-          </div>
-        </div>
-        <button class="btn btn-ghost btn-sm hidden" id="favSeeMoreBtn">Ver todos →</button>
-      </div>
-      <div id="favGrid"></div>
-    </section>
-
-    <!-- Search -->
     <section class="search-section">
       <div class="search-bar-home">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -677,8 +846,78 @@
     <div class="reader-wrapper" id="readerWrapper"></div>
   </main>
 
-  <!-- FAVORITES PAGE -->
-  <main id="favPage" class="page fav-page hidden"></main>
+  <!-- HISTORICO PAGE -->
+  <main id="historyPage" class="page hidden">
+    <div class="history-page-header">
+      <div class="lib-page-title">Histórico</div>
+      <div class="lib-page-sub" id="historyPageSub">Suas últimas leituras</div>
+    </div>
+    <div class="history-list" id="historyList"></div>
+  </main>
+
+  <!-- PERFIL PAGE -->
+  <main id="profilePage" class="page hidden profile-page">
+    <div class="profile-hero" id="profileHero">
+      <div class="profile-avatar" id="profileAvatar">
+        <span id="profileAvatarInitial">?</span>
+      </div>
+      <div>
+        <div class="profile-name" id="profileName">Usuário</div>
+        <div class="profile-id" id="profileIdEl">ID: —</div>
+      </div>
+    </div>
+    <div class="stats-grid" id="statsGrid"></div>
+    <div class="profile-section" id="profileInfoSection"></div>
+  </main>
+
+  <!-- FLOATING BOTTOM NAVBAR -->
+  <nav class="bottom-nav" id="bottomNav">
+    <div class="nav-item" id="nav-lib" data-tab="lib">
+      <div class="nav-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 19V6.2C4 5.08 4 4.52 4.218 4.092a2 2 0 0 1 .874-.874C5.52 3 6.08 3 7.2 3h9.6c1.12 0 1.68 0 2.108.218a2 2 0 0 1 .874.874C20 4.52 20 5.08 20 6.2V19l-3-2-2 2-3-2-3 2-2-2-3 2z"/>
+        </svg>
+      </div>
+      <span class="nav-label">Biblioteca</span>
+    </div>
+    <div class="nav-item" id="nav-updates" data-tab="updates">
+      <div class="nav-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <div class="nav-badge" id="updatesBadge"></div>
+      </div>
+      <span class="nav-label">Novidades</span>
+    </div>
+    <div class="nav-item active" id="nav-home" data-tab="home">
+      <div class="nav-icon">
+        <svg viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="m21 21-4.35-4.35"/>
+        </svg>
+      </div>
+      <span class="nav-label">Explorar</span>
+    </div>
+    <div class="nav-item" id="nav-history" data-tab="history">
+      <div class="nav-icon">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+      </div>
+      <span class="nav-label">Histórico</span>
+    </div>
+    <div class="nav-item" id="nav-profile" data-tab="profile">
+      <div class="nav-icon">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="4"/>
+          <path d="M4 20c0-4 3.582-7 8-7s8 3 8 7"/>
+        </svg>
+      </div>
+      <span class="nav-label">Mais</span>
+    </div>
+  </nav>
 
   <!-- LOADING -->
   <div class="loading-overlay" id="loadingOverlay">
@@ -749,6 +988,20 @@ function skeletonGrid(count = 6) {
   ).join("")}</div>`;
 }
 
+function timeAgo(ts) {
+  if (!ts) return "";
+  const now = Date.now();
+  const diff = now - ts;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "agora mesmo";
+  if (mins < 60) return `${mins} min atrás`;
+  if (hours < 24) return `${hours} h atrás`;
+  if (days === 1) return "ontem";
+  return `${days} dias atrás`;
+}
+
 // ══════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════
@@ -762,10 +1015,9 @@ const state = {
   loadingLock: 0,
   localProgress: loadLocalProgress(),
   favorites: loadFavorites(),
+  seenUpdates: loadSeenUpdates(),
   cache: { home: null, titles: new Map(), chapters: new Map(), search: new Map() },
   inflight: { title: new Map(), chapter: new Map(), search: new Map() },
-  favPage: 1,
-  FAV_PER_PAGE: 24,
 };
 
 // ══════════════════════════════════════════
@@ -805,6 +1057,19 @@ function getFavList() {
   return Object.values(state.favorites).sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
 }
 
+// Seen updates: track which chapter_ids user has already seen in Novidades
+function loadSeenUpdates() {
+  try { return JSON.parse(localStorage.getItem("mb_seen_updates_v1") || "{}"); } catch (_) { return {}; }
+}
+function saveSeenUpdates() {
+  try { localStorage.setItem("mb_seen_updates_v1", JSON.stringify(state.seenUpdates || {})); } catch (_) {}
+}
+function markUpdatesSeen(updates) {
+  updates.forEach(u => { if (u.chapter_id) state.seenUpdates[u.chapter_id] = true; });
+  saveSeenUpdates();
+  updateNavBadge();
+}
+
 // ══════════════════════════════════════════
 //  API
 // ══════════════════════════════════════════
@@ -836,7 +1101,7 @@ function syncUrl({ route = "", titleId = "", chapterId = "" } = {}, replace = fa
     .forEach(k => p.delete(k));
   if (titleId) { p.set("title_id", titleId); p.set("manga_id", titleId); p.set("id", titleId); p.set("title", titleId); }
   if (chapterId) { p.set("chapter_id", chapterId); p.set("cap", chapterId); p.set("read", chapterId); p.set("chapter", chapterId); }
-  if (route) { p.set("route", route); p.set("page", route === "chapters" ? "chapters" : route); p.set("view", route); }
+  if (route) { p.set("route", route); p.set("page", route); p.set("view", route); }
   const finalUrl = `${url.pathname}?${p.toString()}`;
   if (replace) history.replaceState({ route, titleId, chapterId }, "", finalUrl);
   else history.pushState({ route, titleId, chapterId }, "", finalUrl);
@@ -845,23 +1110,62 @@ function syncUrl({ route = "", titleId = "", chapterId = "" } = {}, replace = fa
 // ══════════════════════════════════════════
 //  PAGE MANAGEMENT
 // ══════════════════════════════════════════
-const PAGES = { home: $$("homePage"), detail: $$("detailPage"), reader: $$("readerPage"), favorites: $$("favPage") };
+const ALL_PAGES = ["homePage","detailPage","readerPage","historyPage","profilePage","libPage","updatesPage"];
 
 function setPage(pageName) {
   state.currentPage = pageName;
-  Object.entries(PAGES).forEach(([name, el]) => {
+  ALL_PAGES.forEach(id => {
+    const el = $$(id);
     if (!el) return;
-    if (name === pageName) {
-      el.classList.remove("hidden");
+    const show = id === pageName;
+    el.classList.toggle("hidden", !show);
+    if (show) {
       el.classList.add("page-enter");
       requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("page-enter")));
-    } else {
-      el.classList.add("hidden");
     }
   });
-  $$("backBtn").classList.toggle("hidden", pageName === "home");
-  // Update fav icon active state
-  $$("favTopBtn").classList.toggle("active-fav", pageName === "favorites");
+
+  // back button: show on detail/reader; hide on main tabs
+  const mainTabs = ["homePage","historyPage","profilePage","libPage","updatesPage"];
+  $$("backBtn").classList.toggle("hidden", mainTabs.includes(pageName));
+
+  // hide navbar in reader
+  $$("bottomNav").style.display = pageName === "readerPage" ? "none" : "";
+
+  // sync nav active state
+  const tabMap = { homePage: "home", historyPage: "history", profilePage: "profile", libPage: "lib", updatesPage: "updates" };
+  const activeTab = tabMap[pageName] || "";
+  document.querySelectorAll(".nav-item").forEach(el => {
+    el.classList.toggle("active", el.dataset.tab === activeTab);
+  });
+}
+
+// ══════════════════════════════════════════
+//  NAV BADGE (Novidades)
+// ══════════════════════════════════════════
+function computeUpdates() {
+  // For each favorited title, check if its latest_chapter is in seenUpdates
+  const favs = getFavList();
+  const unseen = [];
+  favs.forEach(fav => {
+    const latestChId = fav.latest_chapter_id || "";
+    if (latestChId && !state.seenUpdates[latestChId]) {
+      unseen.push(fav);
+    }
+  });
+  return unseen;
+}
+
+function updateNavBadge() {
+  const unseen = computeUpdates();
+  const badge = $$("updatesBadge");
+  if (!badge) return;
+  if (unseen.length > 0) {
+    badge.textContent = unseen.length > 9 ? "9+" : String(unseen.length);
+    badge.classList.add("visible");
+  } else {
+    badge.classList.remove("visible");
+  }
 }
 
 // ══════════════════════════════════════════
@@ -871,7 +1175,6 @@ async function doSearch(query) {
   const q = String(query || "").trim();
   if (!q) { clearSearch(); return; }
   const key = q.toLowerCase();
-
   if (state.inflight.search.has(key)) return state.inflight.search.get(key);
 
   const task = (async () => {
@@ -911,18 +1214,15 @@ function clearSearch() {
   $$("topbarSearchClear").classList.remove("visible");
 }
 window.clearSearch = clearSearch;
-window.clearTopbarSearch = clearSearch;
 
 // ══════════════════════════════════════════
-//  FAVORITES TOGGLE / UPDATE UI
+//  FAVORITES TOGGLE
 // ══════════════════════════════════════════
 function updateFavBtn(titleId) {
-  // Update all fav buttons for this title in DOM
   document.querySelectorAll(`[data-fav-id="${CSS.escape(titleId)}"]`).forEach(btn => {
     btn.classList.toggle("faved", isFav(titleId));
     btn.textContent = isFav(titleId) ? "❤️" : "🤍";
   });
-  // Update detail page fav button if open
   const detailFavBtn = $$("detailFavBtn");
   if (detailFavBtn && detailFavBtn.dataset.titleId === titleId) {
     const faved = isFav(titleId);
@@ -930,6 +1230,7 @@ function updateFavBtn(titleId) {
     detailFavBtn.querySelector(".fav-icon").textContent = faved ? "❤️" : "🤍";
     detailFavBtn.querySelector(".fav-label").textContent = faved ? "Favoritado" : "Favoritar";
   }
+  updateNavBadge();
 }
 
 function handleFavClick(titleId, meta = {}, btnEl = null) {
@@ -939,7 +1240,6 @@ function handleFavClick(titleId, meta = {}, btnEl = null) {
     setTimeout(() => btnEl.classList.remove("fav-popping"), 400);
   }
   toast(added ? "⭐ Adicionado aos favoritos!" : "Removido dos favoritos.");
-  renderFavSection();
 }
 
 // ══════════════════════════════════════════
@@ -983,16 +1283,11 @@ function buildCard(item, { showReadBar = false } = {}) {
   card.querySelector(".card-fav-btn").addEventListener("click", (e) => {
     e.stopPropagation();
     handleFavClick(titleId, {
-      title: title,
-      display_title: title,
-      cover_url: cover,
-      background_url: cover,
-      latest_chapter: item.latest_chapter,
-      status: item.status,
-      anilist_score: item.anilist_score || item.rating,
+      title: title, display_title: title, cover_url: cover,
+      background_url: cover, latest_chapter: item.latest_chapter,
+      status: item.status, anilist_score: item.anilist_score || item.rating,
     }, e.currentTarget);
   });
-
   card.addEventListener("click", () => openTitle(titleId));
   return card;
 }
@@ -1000,9 +1295,7 @@ function buildCard(item, { showReadBar = false } = {}) {
 function renderGrid(targetId, items = [], { emptyText = "Nenhum item encontrado.", showReadBar = false } = {}) {
   const target = $$(targetId);
   if (!target) return;
-
   if (!items.length) { target.innerHTML = emptyState(emptyText); return; }
-
   const grid = document.createElement("div");
   grid.className = "card-grid";
   items.forEach(item => grid.appendChild(buildCard(item, { showReadBar })));
@@ -1011,94 +1304,252 @@ function renderGrid(targetId, items = [], { emptyText = "Nenhum item encontrado.
 }
 
 // ══════════════════════════════════════════
-//  FAVORITES SECTION (home)
+//  BIBLIOTECA PAGE
 // ══════════════════════════════════════════
-function renderFavSection() {
+function openLibPage() {
   const favList = getFavList();
-  const section = $$("favSection");
-  const grid = $$("favGrid");
-  const countEl = $$("favCount");
-  const seeMoreBtn = $$("favSeeMoreBtn");
+  $$("libPageSub").textContent = `${favList.length} obra(s) favorita(s)`;
+  renderGrid("libPageGrid", favList, { emptyText: "Nenhuma obra favoritada ainda. Toque em ❤️ para adicionar." });
+  setPage("libPage");
+  syncUrl({ route: "lib" });
+}
+
+// ══════════════════════════════════════════
+//  NOVIDADES PAGE
+// ══════════════════════════════════════════
+async function openUpdatesPage() {
+  setPage("updatesPage");
+  syncUrl({ route: "updates" });
+
+  const favList = getFavList();
+  const container = $$("updatesPageList");
 
   if (!favList.length) {
-    section.classList.add("hidden");
+    container.innerHTML = `
+      <div class="updates-empty">
+        <div class="updates-empty-icon">🔔</div>
+        <div class="updates-empty-title">Nenhuma obra favoritada</div>
+        <div class="updates-empty-text">Favorite obras para ver novidades de capítulos aqui.</div>
+      </div>`;
     return;
   }
 
-  section.classList.remove("hidden");
-  const show = favList.slice(0, 12);
-  countEl.textContent = `${favList.length} mangá(s) favorito(s)`;
+  container.innerHTML = `<div style="color:var(--text3);font-size:13px;padding:8px 0 16px">Verificando atualizações...</div>`;
 
-  if (favList.length > 12) {
-    seeMoreBtn.classList.remove("hidden");
-    seeMoreBtn.onclick = () => openFavoritesPage();
-  } else {
-    seeMoreBtn.classList.add("hidden");
-  }
+  // Build update list from home cache or favorites data
+  const updates = [];
+  const home = state.cache.home;
 
-  renderGrid("favGrid", show, { emptyText: "Sem favoritos ainda." });
-}
+  favList.forEach(fav => {
+    const titleId = fav.title_id || "";
+    if (!titleId) return;
 
-// ══════════════════════════════════════════
-//  FAVORITES PAGE
-// ══════════════════════════════════════════
-function openFavoritesPage() {
-  state.favPage = 1;
-  renderFavoritesPage();
-  setPage("favorites");
-  syncUrl({ route: "favorites" });
-}
+    // Try to get latest chapter info from various sources
+    let latestChNum = fav.latest_chapter || "";
+    let latestChId = fav.latest_chapter_id || "";
+    let updatedAt = fav.updated_at || fav.added_at || Date.now();
 
-function renderFavoritesPage() {
-  const page = $$("favPage");
-  const favList = getFavList();
-  const total = favList.length;
-  const perPage = state.FAV_PER_PAGE;
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const cur = Math.min(state.favPage, totalPages);
-  const slice = favList.slice((cur - 1) * perPage, cur * perPage);
-
-  const gridId = "favPageGrid";
-
-  page.innerHTML = `
-    <div class="fav-page-header">
-      <div class="fav-page-icon">❤️</div>
-      <div>
-        <div class="fav-page-title">Favoritos</div>
-        <div class="fav-page-subtitle">${total} mangá(s) na sua lista</div>
-      </div>
-    </div>
-    <div id="${gridId}"></div>
-    <div class="fav-pagination" id="favPagination"></div>
-  `;
-
-  renderGrid(gridId, slice, { emptyText: "Nenhum favorito ainda. Adicione mangás com ❤️" });
-
-  // Pagination
-  const pag = $$("favPagination");
-  if (totalPages > 1) {
-    const prevBtn = document.createElement("button");
-    prevBtn.className = "fav-page-btn";
-    prevBtn.textContent = "←";
-    prevBtn.disabled = cur <= 1;
-    prevBtn.onclick = () => { state.favPage--; renderFavoritesPage(); window.scrollTo(0, 0); };
-    pag.appendChild(prevBtn);
-
-    for (let i = 1; i <= totalPages; i++) {
-      const btn = document.createElement("button");
-      btn.className = `fav-page-btn ${i === cur ? "active" : ""}`;
-      btn.textContent = i;
-      btn.onclick = ((page) => () => { state.favPage = page; renderFavoritesPage(); window.scrollTo(0, 0); })(i);
-      pag.appendChild(btn);
+    // Check home cache for fresher info
+    if (home) {
+      const allItems = [
+        ...(home.featured || []), ...(home.popular || []),
+        ...(home.recent_titles || []), ...(home.latest_updated || []),
+        ...(home.recent_chapters || [])
+      ];
+      const found = allItems.find(it => (it.title_id || it.id) === titleId);
+      if (found) {
+        latestChNum = found.latest_chapter || found.chapter_number || latestChNum;
+        latestChId = found.chapter_id || latestChId;
+      }
     }
 
-    const nextBtn = document.createElement("button");
-    nextBtn.className = "fav-page-btn";
-    nextBtn.textContent = "→";
-    nextBtn.disabled = cur >= totalPages;
-    nextBtn.onclick = () => { state.favPage++; renderFavoritesPage(); window.scrollTo(0, 0); };
-    pag.appendChild(nextBtn);
+    const isSeen = latestChId ? !!state.seenUpdates[latestChId] : true;
+
+    updates.push({
+      title_id: titleId,
+      title: fav.display_title || fav.title || "Mangá",
+      cover_url: fav.cover_url || "",
+      latest_chapter: latestChNum,
+      chapter_id: latestChId,
+      updated_at: updatedAt,
+      is_new: !isSeen && !!latestChNum,
+    });
+  });
+
+  // Sort: new ones first
+  updates.sort((a, b) => (b.is_new ? 1 : 0) - (a.is_new ? 1 : 0) || (b.updated_at || 0) - (a.updated_at || 0));
+
+  if (!updates.length) {
+    container.innerHTML = emptyState("Nenhuma atualização encontrada.", "🔔");
+    return;
   }
+
+  container.innerHTML = "";
+  updates.forEach(u => {
+    const item = document.createElement("div");
+    item.className = "update-item";
+    item.innerHTML = `
+      <div class="update-cover">
+        ${u.cover_url ? `<img src="${esc(u.cover_url)}" alt="${esc(u.title)}" loading="lazy" />` : ""}
+      </div>
+      <div class="update-info">
+        <div class="update-title">${esc(u.title)}</div>
+        ${u.latest_chapter ? `<div class="update-chapter">Capítulo ${esc(u.latest_chapter)}</div>` : ""}
+        <div class="update-time">${timeAgo(u.updated_at)}</div>
+      </div>
+      ${u.is_new ? `<div class="update-new-badge">NOVO</div>` : ""}
+    `;
+    item.addEventListener("click", () => {
+      if (u.chapter_id) openChapter(u.chapter_id);
+      else openTitle(u.title_id);
+      // Mark as seen
+      if (u.chapter_id) {
+        state.seenUpdates[u.chapter_id] = true;
+        saveSeenUpdates();
+        updateNavBadge();
+      }
+    });
+    container.appendChild(item);
+  });
+
+  // Mark all as seen when page is opened
+  setTimeout(() => {
+    markUpdatesSeen(updates);
+  }, 3000);
+}
+
+// ══════════════════════════════════════════
+//  HISTORICO PAGE
+// ══════════════════════════════════════════
+function openHistoryPage() {
+  const items = Object.values(state.localProgress || {})
+    .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0))
+    .filter(item => item.title_id && item.chapter_id);
+
+  $$("historyPageSub").textContent = `${items.length} leitura(s) registrada(s)`;
+
+  const list = $$("historyList");
+
+  if (!items.length) {
+    list.innerHTML = emptyState("Você ainda não leu nenhum capítulo. Explore e comece a ler!", "📖");
+    setPage("historyPage");
+    syncUrl({ route: "history" });
+    return;
+  }
+
+  list.innerHTML = "";
+  items.forEach(item => {
+    const pct = item.total_pages > 0
+      ? Math.max(4, Math.min(100, ((item.page_index || 0) / item.total_pages) * 100))
+      : 0;
+
+    const row = document.createElement("div");
+    row.className = "history-item";
+    row.innerHTML = `
+      <div class="history-cover">
+        ${item.cover_url ? `<img src="${esc(item.cover_url)}" alt="${esc(item.title_name)}" loading="lazy" />` : ""}
+        <div class="history-cover-prog"><div class="history-cover-prog-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="history-info">
+        <div class="history-title">${esc(item.title_name || "Mangá")}</div>
+        <div class="history-chapter">Capítulo ${esc(item.chapter_number || "?")}</div>
+        <div class="history-meta">
+          <div class="history-meta-row">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Pág. ${esc(item.page_index || 1)} de ${esc(item.total_pages || "?")}
+          </div>
+          <div class="history-meta-row">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            ${timeAgo(item.updated_at)}
+          </div>
+        </div>
+      </div>
+      <button class="history-del-btn" title="Remover do histórico">🗑</button>
+    `;
+
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".history-del-btn")) return;
+      openChapter(item.chapter_id);
+    });
+    row.querySelector(".history-del-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      delete state.localProgress[item.title_id];
+      saveLocalProgress();
+      row.style.opacity = "0";
+      row.style.transition = "opacity .2s";
+      setTimeout(() => { row.remove(); updateNavBadge(); }, 200);
+      toast("Removido do histórico.");
+    });
+
+    list.appendChild(row);
+  });
+
+  setPage("historyPage");
+  syncUrl({ route: "history" });
+}
+
+// ══════════════════════════════════════════
+//  PERFIL PAGE
+// ══════════════════════════════════════════
+function openProfilePage() {
+  const user = tg?.initDataUnsafe?.user;
+  const name = user ? `${user.first_name || ""}${user.last_name ? " " + user.last_name : ""}`.trim() : "Usuário";
+  const username = user?.username ? `@${user.username}` : (state.userId ? `ID: ${state.userId}` : "Visitante");
+  const initial = name?.[0]?.toUpperCase() || "?";
+  const photoUrl = user?.photo_url || "";
+
+  $$("profileName").textContent = name || "Usuário";
+  $$("profileIdEl").textContent = username;
+  $$("profileAvatarInitial").textContent = initial;
+  if (photoUrl) {
+    const img = document.createElement("img");
+    img.src = photoUrl;
+    img.alt = name;
+    $$("profileAvatar").appendChild(img);
+  }
+
+  // Compute stats
+  const totalFavs = getFavList().length;
+  const progressEntries = Object.values(state.localProgress || {});
+  const totalTitlesOpened = progressEntries.length;
+  const totalChapsRead = progressEntries.reduce((acc, p) => {
+    // Count chapters: count unique chapter_ids read
+    return acc + 1;
+  }, 0);
+  const totalPagesRead = progressEntries.reduce((acc, p) => acc + (p.page_index || 0), 0);
+
+  const statsGrid = $$("statsGrid");
+  statsGrid.innerHTML = [
+    { value: totalFavs, label: "Favoritos" },
+    { value: totalChapsRead, label: "Caps lidos" },
+    { value: totalTitlesOpened, label: "Obras abertas" },
+    { value: totalPagesRead.toLocaleString("pt-BR"), label: "Páginas lidas" },
+  ].map(s => `
+    <div class="stat-card">
+      <div class="stat-value">${esc(String(s.value))}</div>
+      <div class="stat-label">${esc(s.label)}</div>
+    </div>
+  `).join("");
+
+  const infoSection = $$("profileInfoSection");
+  infoSection.innerHTML = `
+    <div class="profile-section-title">Detalhes da conta</div>
+    <div class="profile-row">
+      <span class="profile-row-label">Plataforma</span>
+      <span class="profile-row-value">Telegram</span>
+    </div>
+    ${state.userId ? `<div class="profile-row">
+      <span class="profile-row-label">User ID</span>
+      <span class="profile-row-value">${esc(state.userId)}</span>
+    </div>` : ""}
+    <div class="profile-row">
+      <span class="profile-row-label">Armazenamento</span>
+      <span class="profile-row-value">Local</span>
+    </div>
+  `;
+
+  setPage("profilePage");
+  syncUrl({ route: "profile" });
 }
 
 // ══════════════════════════════════════════
@@ -1111,26 +1562,16 @@ function renderContinueSection() {
     .slice(0, 12);
 
   const section = $$("continueSection");
-  const list = $$("continueList");
-  const countEl = $$("continueCount");
-
-  if (!items.length) {
-    section.classList.add("hidden");
-    return;
-  }
-
+  if (!items.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
-  countEl.textContent = `${items.length} obra(s) em andamento`;
+  $$("continueCount").textContent = `${items.length} obra(s) em andamento`;
 
-  list.innerHTML = items.map(item => {
-    const pct = item.total_pages > 0
-      ? Math.max(4, Math.min(100, ((item.page_index || 0) / item.total_pages) * 100))
-      : 0;
-    const cover = item.cover_url || "";
+  $$("continueList").innerHTML = items.map(item => {
+    const pct = item.total_pages > 0 ? Math.max(4, Math.min(100, ((item.page_index || 0) / item.total_pages) * 100)) : 0;
     return `
       <article class="cw-card" data-title-id="${esc(item.title_id)}" data-chapter-id="${esc(item.chapter_id)}">
         <div class="cw-thumb">
-          ${cover ? `<img src="${esc(cover)}" alt="${esc(item.title_name)}" loading="lazy" />` : ""}
+          ${item.cover_url ? `<img src="${esc(item.cover_url)}" alt="${esc(item.title_name)}" loading="lazy" />` : ""}
           <div class="cw-play"><div class="cw-play-ico">▶</div></div>
           <div class="cw-badge">Cap. ${esc(item.chapter_number || "?")}</div>
           <div class="cw-prog"><div class="cw-prog-fill" style="width:${pct}%"></div></div>
@@ -1139,11 +1580,10 @@ function renderContinueSection() {
           <div class="cw-title">${esc(item.title_name || "Mangá")}</div>
           <div class="cw-sub">Pág. ${esc(item.page_index || 1)} de ${esc(item.total_pages || "?")}</div>
         </div>
-      </article>
-    `;
+      </article>`;
   }).join("");
 
-  list.querySelectorAll(".cw-card").forEach(card => {
+  $$("continueList").querySelectorAll(".cw-card").forEach(card => {
     card.addEventListener("click", () => {
       const cid = card.dataset.chapterId;
       const tid = card.dataset.titleId;
@@ -1157,13 +1597,13 @@ function renderHome(data) {
   const featured = data?.featured || [];
   const popular = data?.popular || [];
   const recentTitles = data?.recent_titles || [];
-  const latestUpdated = data?.latest_updated || [];
+  const latestUpdated = data?.latest_updated || data?.latest_titles || [];
   const recentChapters = data?.recent_chapters || [];
 
   if (featured.length) {
     const hero = featured[0];
     $$("heroTitle").innerHTML = `${esc(hero.display_title || hero.title || "Descubra mangás")}<br>e leia sem parar.`;
-    $$("heroBg").style.backgroundImage = hero.background_url || hero.cover_url
+    $$("heroBg").style.backgroundImage = (hero.background_url || hero.cover_url)
       ? `url("${hero.background_url || hero.cover_url}")` : "none";
     $$("heroPrimaryBtn").onclick = () => openTitle(hero.title_id);
   }
@@ -1178,23 +1618,19 @@ function renderHome(data) {
   $$("popularCount").textContent = `${popular.length} itens`;
 
   renderContinueSection();
-  renderFavSection();
+  updateNavBadge();
 
-  setPage("home");
+  setPage("homePage");
   syncUrl({ route: "home" }, true);
 }
 
 async function loadHome(force = false) {
   showLoading("Abrindo catálogo", "Carregando destaques, populares e novos capítulos.");
   try {
-    if (!force && state.cache.home) {
-      renderHome(state.cache.home);
-      return;
-    }
+    if (!force && state.cache.home) { renderHome(state.cache.home); return; }
     ["featuredGrid","popularGrid","recentTitlesGrid","latestGrid","recentChaptersGrid"].forEach(id => {
       const el = $$(id); if (el) el.innerHTML = skeletonGrid(6);
     });
-
     const data = await api("/api/home");
     state.cache.home = data;
     renderHome(data);
@@ -1223,8 +1659,6 @@ function buildMetaPills(bundle, chapters = []) {
   return pills.join("");
 }
 
-// Sort chapters newest first (highest chapter_number first)
-// chapter_number can be "1178", "Ch. 1178", "Cap. 1178", "1178.5", etc.
 function extractChapterNum(ch) {
   const raw = String(ch.chapter_number || ch.number || "0");
   const match = raw.match(/[\d]+(?:[.,]\d+)?/);
@@ -1239,8 +1673,6 @@ function renderDetail(bundle, opts = {}) {
   const flatChapters = rawChapters.flatMap(entry =>
     Array.isArray(entry?.chapters) ? entry.chapters : [entry]
   ).filter(Boolean);
-
-  // Sort newest first
   const chapters = sortChapters(flatChapters);
 
   const local = getProgress(bundle.title_id);
@@ -1261,9 +1693,7 @@ function renderDetail(bundle, opts = {}) {
         <div class="detail-bg" style="${bg ? `background-image:url('${esc(bg)}')` : ""}"></div>
         <div class="detail-grad-overlay"></div>
         <div class="detail-inner">
-          <div class="detail-cover">
-            ${cover ? `<img src="${esc(cover)}" alt="${esc(bundle.title || "Mangá")}" loading="eager" decoding="async" />` : ""}
-          </div>
+          <div class="detail-cover">${cover ? `<img src="${esc(cover)}" alt="${esc(bundle.title || "Mangá")}" loading="eager" decoding="async" />` : ""}</div>
           <div class="detail-info">
             <h1 class="detail-title">${esc(bundle.title || "Mangá")}</h1>
             ${bundle.alternative_title ? `<div class="detail-alt">${esc(bundle.alternative_title)}</div>` : ""}
@@ -1285,16 +1715,12 @@ function renderDetail(bundle, opts = {}) {
           </div>
         </div>
       </section>
-
       <div class="detail-body">
         <div class="chapter-panel">
           <div class="section-head">
             <div class="section-label">
               <div class="section-accent"></div>
-              <div>
-                <div class="section-title">Capítulos</div>
-                <div class="section-count">${chapters.length} disponíveis</div>
-              </div>
+              <div><div class="section-title">Capítulos</div><div class="section-count">${chapters.length} disponíveis</div></div>
             </div>
           </div>
           <div class="chapter-controls">
@@ -1302,8 +1728,7 @@ function renderDetail(bundle, opts = {}) {
               <div class="chapter-search">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
                 <input id="chapterFilterInput" placeholder="Filtrar capítulo..." autocomplete="off" />
-              </div>
-            ` : ""}
+              </div>` : ""}
             <button class="chapter-order-btn" id="chapterOrderBtn">
               <span id="chapterOrderIcon">↓</span>
               <span id="chapterOrderLabel">Mais novo</span>
@@ -1312,18 +1737,14 @@ function renderDetail(bundle, opts = {}) {
           <div class="chapter-grid" id="chapterGrid"></div>
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 
-  // Chapter state
-  let chapterOrder = "desc"; // desc = newest first (default)
+  let chapterOrder = "desc";
   let chapterFilter = "";
-
   const readMap = {};
   Object.values(state.localProgress).forEach(p => {
     if (p?.title_id === bundle.title_id && p?.chapter_id) readMap[p.chapter_id] = true;
   });
-
   const grid = $$("chapterGrid");
 
   function buildChapterButtons(list) {
@@ -1336,8 +1757,7 @@ function renderDetail(bundle, opts = {}) {
       btn.className = `chapter-btn ${isLastRead ? "current" : (isRead ? "read" : "")}`;
       btn.innerHTML = `
         <div class="chapter-n">Cap. ${esc(ch.chapter_number || "?")}</div>
-        <div class="chapter-meta">${esc(ch.updated_at || ch.chapter_language || "Toque para ler")}</div>
-      `;
+        <div class="chapter-meta">${esc(ch.updated_at || ch.chapter_language || "Toque para ler")}</div>`;
       btn.addEventListener("click", () => openChapter(ch.chapter_id));
       grid.appendChild(btn);
     });
@@ -1345,59 +1765,42 @@ function renderDetail(bundle, opts = {}) {
 
   function getFilteredSorted() {
     let list = chapterOrder === "desc" ? [...chapters] : [...chapters].reverse();
-    if (chapterFilter) {
-      list = list.filter(ch =>
-        String(ch.chapter_number || "").toLowerCase().includes(chapterFilter) ||
-        String(ch.chapter_language || "").toLowerCase().includes(chapterFilter)
-      );
-    }
+    if (chapterFilter) list = list.filter(ch =>
+      String(ch.chapter_number || "").toLowerCase().includes(chapterFilter) ||
+      String(ch.chapter_language || "").toLowerCase().includes(chapterFilter)
+    );
     return list;
   }
 
   buildChapterButtons(getFilteredSorted());
 
   const filterInput = $$("chapterFilterInput");
-  if (filterInput) {
-    filterInput.addEventListener("input", () => {
-      chapterFilter = filterInput.value.trim().toLowerCase();
-      buildChapterButtons(getFilteredSorted());
-    });
-  }
+  if (filterInput) filterInput.addEventListener("input", () => { chapterFilter = filterInput.value.trim().toLowerCase(); buildChapterButtons(getFilteredSorted()); });
 
   const orderBtn = $$("chapterOrderBtn");
-  if (orderBtn) {
-    orderBtn.addEventListener("click", () => {
-      chapterOrder = chapterOrder === "desc" ? "asc" : "desc";
-      $$("chapterOrderIcon").textContent = chapterOrder === "desc" ? "↓" : "↑";
-      $$("chapterOrderLabel").textContent = chapterOrder === "desc" ? "Mais novo" : "Mais antigo";
-      buildChapterButtons(getFilteredSorted());
-    });
-  }
+  if (orderBtn) orderBtn.addEventListener("click", () => {
+    chapterOrder = chapterOrder === "desc" ? "asc" : "desc";
+    $$("chapterOrderIcon").textContent = chapterOrder === "desc" ? "↓" : "↑";
+    $$("chapterOrderLabel").textContent = chapterOrder === "desc" ? "Mais novo" : "Mais antigo";
+    buildChapterButtons(getFilteredSorted());
+  });
 
   const synopsisToggle = $$("synopsisToggle");
-  if (synopsisToggle) {
-    synopsisToggle.onclick = () => {
-      const text = $$("synopsisText");
-      const arrow = $$("synopsisArrow");
-      const expanded = text.classList.toggle("expanded");
-      synopsisToggle.childNodes[0].textContent = expanded ? "Ver menos " : "Ver mais ";
-      if (arrow) arrow.textContent = expanded ? "▲" : "▼";
-    };
-  }
+  if (synopsisToggle) synopsisToggle.onclick = () => {
+    const text = $$("synopsisText");
+    const arrow = $$("synopsisArrow");
+    const expanded = text.classList.toggle("expanded");
+    synopsisToggle.childNodes[0].textContent = expanded ? "Ver menos " : "Ver mais ";
+    if (arrow) arrow.textContent = expanded ? "▲" : "▼";
+  };
 
-  const continueBtn = $$("continueReadBtn");
-  const latestBtn = $$("latestChBtn");
-  if (continueBtn) continueBtn.onclick = () => openChapter(lastRead);
-  if (latestBtn) latestBtn.onclick = () => openChapter(latestChapter);
+  if ($$("continueReadBtn")) $$("continueReadBtn").onclick = () => openChapter(lastRead);
+  if ($$("latestChBtn")) $$("latestChBtn").onclick = () => openChapter(latestChapter);
 
   const detailFavBtn = $$("detailFavBtn");
-  if (detailFavBtn) {
-    detailFavBtn.addEventListener("click", () => {
-      handleFavClick(bundle.title_id, favMeta, detailFavBtn);
-    });
-  }
+  if (detailFavBtn) detailFavBtn.addEventListener("click", () => handleFavClick(bundle.title_id, favMeta, detailFavBtn));
 
-  setPage("detail");
+  setPage("detailPage");
   syncUrl({ route: opts.route === "chapters" ? "chapters" : "detail", titleId: bundle.title_id }, opts.replaceHistory ?? false);
 }
 
@@ -1418,8 +1821,6 @@ async function openTitle(titleId, force = false, options = {}) {
         state.cache.titles.set(key, bundle);
       }
       renderDetail(bundle, { route: options.route || "detail", replaceHistory: Boolean(options.replaceHistory) });
-
-      // Preload adjacent chapters
       [bundle?.last_read?.chapter_id, bundle?.latest_chapter?.chapter_id].forEach(async (cid) => {
         if (!cid || state.cache.chapters.has(cid)) return;
         try { state.cache.chapters.set(cid, await api(`/api/chapter/${encodeURIComponent(cid)}`)); } catch (_) {}
@@ -1432,7 +1833,6 @@ async function openTitle(titleId, force = false, options = {}) {
       state.inflight.title.delete(key);
     }
   })();
-
   state.inflight.title.set(key, task);
   return task;
 }
@@ -1460,22 +1860,13 @@ function renderChapter(payload, options = {}) {
         ${next ? `<button class="btn btn-sm" id="readerNext">Próximo ➡️</button>` : ""}
       </div>
     </div>
-
     <div class="reader-pages">
       ${pages.map((img, i) => `
         <article class="reader-page-item">
-          <img
-            src="${esc(img)}"
-            alt="Página ${i + 1}"
-            loading="${i < 3 ? "eager" : "lazy"}"
-            decoding="${i < 3 ? "sync" : "async"}"
-            data-index="${i + 1}"
-          />
+          <img src="${esc(img)}" alt="Página ${i + 1}" loading="${i < 3 ? "eager" : "lazy"}" decoding="${i < 3 ? "sync" : "async"}" data-index="${i + 1}" />
           <div class="page-label">${i + 1}/${pages.length}</div>
-        </article>
-      `).join("")}
+        </article>`).join("")}
     </div>
-
     <div class="reader-footer">
       <div class="reader-footer-title">Fim do capítulo 🎉</div>
       <div class="reader-footer-nav">
@@ -1483,8 +1874,7 @@ function renderChapter(payload, options = {}) {
         ${prev ? `<button class="btn" id="readerFooterPrev">⬅️ Anterior</button>` : ""}
         ${next ? `<button class="btn btn-primary" id="readerFooterNext">Próximo ➡️</button>` : ""}
       </div>
-    </div>
-  `;
+    </div>`;
 
   const backFn = () => openTitle(payload.title_id, false, { route: "chapters" });
   $$("readerBackToTitle").onclick = backFn;
@@ -1494,7 +1884,7 @@ function renderChapter(payload, options = {}) {
   if ($$("readerFooterPrev")) $$("readerFooterPrev").onclick = () => openChapter(prev);
   if ($$("readerFooterNext")) $$("readerFooterNext").onclick = () => openChapter(next);
 
-  setPage("reader");
+  setPage("readerPage");
   syncUrl({ route: "reader", titleId: payload.title_id, chapterId: payload.chapter_id }, options.replaceHistory ?? false);
   attachReaderObserver(payload);
 }
@@ -1503,29 +1893,17 @@ function attachReaderObserver(payload) {
   state.chapterObserver?.disconnect();
   const images = [...document.querySelectorAll(".reader-page-item img")];
   if (!images.length) return;
-
   let lastSaved = -1;
   state.chapterObserver = new IntersectionObserver((entries) => {
-    const visible = entries
-      .filter(e => e.isIntersecting)
-      .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+    const visible = entries.filter(e => e.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
     if (!visible) return;
     const index = Number(visible.target.dataset.index || "0");
     if (index === lastSaved) return;
     lastSaved = index;
     const tb = state.cache.titles.get(payload.title_id);
     const savedCover = tb?.cover_url || getProgress(payload.title_id)?.cover_url || "";
-    persistProgress({
-      title_id: payload.title_id,
-      title_name: payload.title,
-      chapter_id: payload.chapter_id,
-      chapter_number: payload.chapter_number,
-      page_index: index,
-      total_pages: images.length,
-      cover_url: savedCover,
-    }).catch(() => {});
+    persistProgress({ title_id: payload.title_id, title_name: payload.title, chapter_id: payload.chapter_id, chapter_number: payload.chapter_number, page_index: index, total_pages: images.length, cover_url: savedCover }).catch(() => {});
   }, { threshold: [0.3, 0.6, 0.9] });
-
   images.forEach(img => state.chapterObserver.observe(img));
 }
 
@@ -1537,16 +1915,7 @@ async function persistProgress(payload) {
     await api("/api/progress", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_id: state.userId,
-        title_id: payload.title_id,
-        title_name: payload.title_name || "",
-        chapter_id: payload.chapter_id || "",
-        chapter_number: payload.chapter_number || "",
-        chapter_url: "",
-        page_index: Number(payload.page_index || 0),
-        total_pages: Number(payload.total_pages || 0),
-      }),
+      body: JSON.stringify({ user_id: state.userId, title_id: payload.title_id, title_name: payload.title_name || "", chapter_id: payload.chapter_id || "", chapter_number: payload.chapter_number || "", chapter_url: "", page_index: Number(payload.page_index || 0), total_pages: Number(payload.total_pages || 0) }),
     });
   } catch (_) {}
 }
@@ -1564,29 +1933,14 @@ async function openChapter(chapterId, force = false, options = {}) {
         payload = await api(`/api/chapter/${encodeURIComponent(key)}`);
         state.cache.chapters.set(key, payload);
       }
-
       renderChapter(payload, { replaceHistory: Boolean(options.replaceHistory) });
-
-      // Grab cover from title cache if available
       const titleBundle = state.cache.titles.get(payload.title_id);
       const coverUrl = titleBundle?.cover_url || "";
-
-      await persistProgress({
-        title_id: payload.title_id,
-        title_name: payload.title,
-        chapter_id: payload.chapter_id,
-        chapter_number: payload.chapter_number,
-        page_index: 1,
-        total_pages: payload.images?.length || 0,
-        cover_url: coverUrl,
-      });
-
-      // Preload adjacent chapters in background
+      await persistProgress({ title_id: payload.title_id, title_name: payload.title, chapter_id: payload.chapter_id, chapter_number: payload.chapter_number, page_index: 1, total_pages: payload.images?.length || 0, cover_url: coverUrl });
       [payload?.next_chapter?.chapter_id, payload?.previous_chapter?.chapter_id].forEach(async (id) => {
         if (!id || state.cache.chapters.has(id)) return;
         try { state.cache.chapters.set(id, await api(`/api/chapter/${encodeURIComponent(id)}`)); } catch (_) {}
       });
-
       if (payload?.title_id && !state.cache.titles.has(payload.title_id)) {
         api(`/api/title/${encodeURIComponent(payload.title_id)}?lang=pt-br${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`)
           .then(bundle => { state.cache.titles.set(payload.title_id, bundle); state.currentTitleBundle = bundle; })
@@ -1600,7 +1954,6 @@ async function openChapter(chapterId, force = false, options = {}) {
       state.inflight.chapter.delete(key);
     }
   })();
-
   state.inflight.chapter.set(key, task);
   return task;
 }
@@ -1609,33 +1962,29 @@ async function openChapter(chapterId, force = false, options = {}) {
 //  NAVIGATION
 // ══════════════════════════════════════════
 function onBack() {
-  if (state.currentPage === "reader" && state.currentTitleId) {
-    openTitle(state.currentTitleId, false, { route: "chapters" });
-    return;
-  }
-  if (state.currentPage === "detail") { setPage("home"); syncUrl({ route: "home" }); return; }
-  if (state.currentPage === "favorites") { setPage("home"); syncUrl({ route: "home" }); return; }
-  if (!$$("searchResultsSection").classList.contains("hidden")) { clearSearch(); return; }
+  if (state.currentPage === "readerPage" && state.currentTitleId) { openTitle(state.currentTitleId, false, { route: "chapters" }); return; }
+  if (state.currentPage === "detailPage") { setPage("homePage"); syncUrl({ route: "home" }); return; }
   loadHome(true);
 }
 
 window.jumpTo = (id) => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
-// ══════════════════════════════════════════
-//  EVENT LISTENERS
-// ══════════════════════════════════════════
-$$("homeBtn").addEventListener("click", () => loadHome(true));
+// Bottom nav clicks
+document.querySelectorAll(".nav-item").forEach(item => {
+  item.addEventListener("click", () => {
+    const tab = item.dataset.tab;
+    if (tab === "home") { if (state.currentPage === "homePage") window.scrollTo({ top: 0, behavior: "smooth" }); else loadHome(); }
+    else if (tab === "lib") openLibPage();
+    else if (tab === "updates") openUpdatesPage();
+    else if (tab === "history") openHistoryPage();
+    else if (tab === "profile") openProfilePage();
+  });
+});
+
 $$("backBtn").addEventListener("click", onBack);
 $$("brandBtn").addEventListener("click", () => loadHome());
-$$("favTopBtn").addEventListener("click", () => {
-  if (state.currentPage === "favorites") { setPage("home"); syncUrl({ route: "home" }); }
-  else openFavoritesPage();
-});
-$$("heroPrimaryBtn").addEventListener("click", () => jumpTo("featuredSection"));
-$$("heroSecondaryBtn").addEventListener("click", () => jumpTo("recentChaptersSection"));
 $$("topbarSearchClear").addEventListener("click", clearSearch);
 
-// Home search
 let _searchTimer, _searchTimer2;
 $$("homeSearchInput").addEventListener("input", () => {
   const v = $$("homeSearchInput").value.trim();
@@ -1647,8 +1996,6 @@ $$("homeSearchInput").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); doSearch($$("homeSearchInput").value); }
   if (e.key === "Escape") clearSearch();
 });
-
-// Topbar search
 $$("topbarSearchInput").addEventListener("input", () => {
   const v = $$("topbarSearchInput").value.trim();
   $$("topbarSearchClear").classList.toggle("visible", v.length > 0);
@@ -1661,24 +2008,28 @@ $$("topbarSearchInput").addEventListener("keydown", e => {
   if (e.key === "Escape") clearSearch();
 });
 
-// Cache TTL
+$$("heroPrimaryBtn").addEventListener("click", () => jumpTo("featuredSection"));
+$$("heroSecondaryBtn").addEventListener("click", () => jumpTo("recentChaptersSection"));
+
 setInterval(() => { state.cache.home = null; }, 3 * 60 * 1000);
 
-// History
 window.addEventListener("popstate", async () => {
   const boot = getBootParams();
-  if (boot.route === "favorites") { openFavoritesPage(); return; }
+  if (boot.route === "lib") { openLibPage(); return; }
+  if (boot.route === "updates") { openUpdatesPage(); return; }
+  if (boot.route === "history") { openHistoryPage(); return; }
+  if (boot.route === "profile") { openProfilePage(); return; }
   if (boot.chapterId) { await openChapter(boot.chapterId, false, { replaceHistory: true }); return; }
   if (boot.titleId) { await openTitle(boot.titleId, false, { route: boot.route === "chapters" ? "chapters" : "detail", replaceHistory: true }); return; }
   await loadHome();
 });
 
-// ══════════════════════════════════════════
-//  BOOT
-// ══════════════════════════════════════════
 async function boot() {
   const b = getBootParams();
-  if (b.route === "favorites") { await loadHome(); openFavoritesPage(); return; }
+  if (b.route === "lib") { await loadHome(); openLibPage(); return; }
+  if (b.route === "updates") { await loadHome(); openUpdatesPage(); return; }
+  if (b.route === "history") { openHistoryPage(); return; }
+  if (b.route === "profile") { openProfilePage(); return; }
   if (b.chapterId) { await openChapter(b.chapterId, false, { replaceHistory: true }); return; }
   if (b.titleId) { await openTitle(b.titleId, false, { route: b.route === "chapters" ? "chapters" : "detail", replaceHistory: true }); return; }
   await loadHome();
