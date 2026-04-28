@@ -31,11 +31,13 @@ from handlers.search import buscar
 from handlers.start import start
 from services.catalog_client import schedule_warm_catalog_cache, warm_catalog_cache
 from services.metrics import init_metrics_db
+from services.offline_access import init_offline_access_db
 from services.referral_db import init_referral_db
 from handlers.postmanga import postmanga, postallmangas
 
 init_metrics_db()
 init_referral_db()
+init_offline_access_db()
 
 MAX_CONCURRENT_UPDATES = 128
 BOT_API_CONNECTION_POOL = 64
