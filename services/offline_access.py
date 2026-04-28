@@ -14,6 +14,10 @@ from config import DATA_DIR
 DB_PATH = DATA_DIR / "offline_access.sqlite3"
 
 PLAN_DAYS: dict[str, int | None] = {
+    "bronze": 7,
+    "ouro": 30,
+    "diamante": 365,
+    "rubi": None,
     "1m": 30,
     "3m": 90,
     "6m": 180,
@@ -21,6 +25,10 @@ PLAN_DAYS: dict[str, int | None] = {
 }
 
 PLAN_LABELS = {
+    "bronze": "Plano Bronze (semanal)",
+    "ouro": "Plano Ouro (mensal)",
+    "diamante": "Plano Diamante (anual)",
+    "rubi": "Plano Rubi (vitalicio)",
     "1m": "1 mes",
     "3m": "3 meses",
     "6m": "6 meses",
@@ -78,14 +86,40 @@ def normalize_plan(value: str | None) -> str:
         return ""
 
     aliases = {
+        "bronze": "bronze",
+        "plano_bronze": "bronze",
+        "semanal": "bronze",
+        "semana": "bronze",
+        "weekly": "bronze",
+        "week": "bronze",
+        "7d": "bronze",
+        "7_dias": "bronze",
+        "wyd3e3i": "bronze",
+        "ouro": "ouro",
+        "plano_ouro": "ouro",
+        "oferta_principal": "ouro",
         "1": "1m",
-        "1m": "1m",
-        "1_mes": "1m",
-        "um_mes": "1m",
-        "mensal": "1m",
-        "monthly": "1m",
-        "30d": "1m",
-        "30_dias": "1m",
+        "1m": "ouro",
+        "1_mes": "ouro",
+        "um_mes": "ouro",
+        "mensal": "ouro",
+        "monthly": "ouro",
+        "30d": "ouro",
+        "30_dias": "ouro",
+        "38kt683_866815": "ouro",
+        "diamante": "diamante",
+        "plano_diamante": "diamante",
+        "anual": "diamante",
+        "ano": "diamante",
+        "annual": "diamante",
+        "yearly": "diamante",
+        "12m": "diamante",
+        "12_meses": "diamante",
+        "365d": "diamante",
+        "365_dias": "diamante",
+        "33mfwfe": "diamante",
+        "rubi": "rubi",
+        "plano_rubi": "rubi",
         "3": "3m",
         "3m": "3m",
         "3_meses": "3m",
@@ -98,23 +132,32 @@ def normalize_plan(value: str | None) -> str:
         "semestral": "6m",
         "180d": "6m",
         "180_dias": "6m",
-        "vitalicio": "lifetime",
-        "vitalicia": "lifetime",
-        "vital": "lifetime",
-        "lifetime": "lifetime",
-        "perpetuo": "lifetime",
+        "vitalicio": "rubi",
+        "vitalicia": "rubi",
+        "vital": "rubi",
+        "lifetime": "rubi",
+        "perpetuo": "rubi",
+        "57t5ieq": "rubi",
     }
     if text in aliases:
         return aliases[text]
 
+    if "wyd3e3i" in text or "plano_bronze" in text or "semanal" in text:
+        return "bronze"
+    if "38kt683_866815" in text or "plano_ouro" in text or "oferta_principal" in text:
+        return "ouro"
+    if "33mfwfe" in text or "plano_diamante" in text or "anual" in text:
+        return "diamante"
+    if "57t5ieq" in text or "plano_rubi" in text:
+        return "rubi"
     if re.search(r"(^|_)1(_)?m(es)?($|_)", text) or "30_dias" in text:
-        return "1m"
+        return "ouro"
     if re.search(r"(^|_)3(_)?m(eses)?($|_)", text) or "90_dias" in text:
         return "3m"
     if re.search(r"(^|_)6(_)?m(eses)?($|_)", text) or "180_dias" in text:
         return "6m"
     if any(item in text for item in ("vitalicio", "vitalicia", "lifetime", "perpetuo")):
-        return "lifetime"
+        return "rubi"
 
     return ""
 
@@ -357,10 +400,10 @@ def grant_offline_access(
         current_expires = _parse_dt(current["expires_at"]) if current else None
 
         if current_active and current_active.get("is_active") and current_active.get("is_lifetime"):
-            final_plan = "lifetime"
+            final_plan = "rubi"
             expires_at = None
         elif PLAN_DAYS[normalized_plan] is None:
-            final_plan = "lifetime"
+            final_plan = normalized_plan
             expires_at = None
         else:
             start = current_expires if current_expires and current_expires > now else now
@@ -454,7 +497,7 @@ def revoke_offline_access(
             (uid,),
         ).fetchone()
         created_at = current["created_at"] if current else now_text
-        plan = current["plan"] if current else "1m"
+        plan = current["plan"] if current else "ouro"
 
         conn.execute(
             """
