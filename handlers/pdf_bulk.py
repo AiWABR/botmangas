@@ -79,7 +79,7 @@ def _bulk_key(user_id: int, title_ref: str) -> str:
 
 def _stop_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Parar download", callback_data=f"mb|stopbulk|{job_id}")]]
+        [[InlineKeyboardButton("⛔ Parar download", callback_data=f"mb|stopbulk|{job_id}")]]
     )
 
 
@@ -92,8 +92,8 @@ def _limited_chapters(chapters: list[dict]) -> tuple[list[dict], bool]:
 
 def _order_label(order: str) -> str:
     if normalize_pdf_bulk_order(order) == ORDER_DESC:
-        return "do ultimo para o primeiro"
-    return "do primeiro para o ultimo"
+        return "ultimo ao primeiro"
+    return "primeiro ao ultimo"
 
 
 def _chapter_caption(chapter: dict) -> str:
@@ -135,17 +135,17 @@ def _ordered_chapters(bundle: dict, title_id: str, order: str) -> list[dict]:
 
 async def _edit_preparing_status(state: PdfBulkState, current_index: int = 0, current_chapter: str = "") -> None:
     lines = [
-        "<b>Preparando PDFs offline</b>",
+        "📥 <b>Preparando PDFs offline</b>",
         "",
-        f"<b>Obra:</b> {html.escape(state.title_name)}",
-        f"<b>Ordem:</b> {_order_label(state.order)}",
+        f"» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>",
+        f"» <b>Ordem:</b> <i>{_order_label(state.order)}</i>",
     ]
     if state.total:
-        lines.append(f"<b>Fila:</b> {current_index}/{state.total}")
+        lines.append(f"» <b>Fila:</b> <i>{current_index}/{state.total}</i>")
     if current_chapter:
-        lines.append(f"<b>Capitulo atual:</b> {html.escape(current_chapter)}")
+        lines.append(f"» <b>Capitulo atual:</b> <i>{html.escape(current_chapter)}</i>")
     else:
-        lines.append("<b>Status:</b> enfileirando...")
+        lines.append("⏳ <i>Enfileirando capitulos...</i>")
 
     await _safe_edit(state.status_message, "\n".join(lines), reply_markup=_stop_keyboard(state.job_id))
 
@@ -158,8 +158,9 @@ async def _run_pdf_bulk(app, state: PdfBulkState) -> None:
         state.status_message = await app.bot.send_message(
             state.chat_id,
             (
-                "<b>Lote de PDFs recebido</b>\n\n"
-                "Vou carregar a obra e enfileirar os capitulos para leitura offline."
+                "📥 <b>Pedido recebido</b>\n\n"
+                "» <b>Modo:</b> <i>leitura offline</i>\n"
+                "⏳ <i>Vou carregar a obra e preparar os PDFs.</i>"
             ),
             parse_mode="HTML",
             reply_markup=_stop_keyboard(state.job_id),
@@ -175,7 +176,7 @@ async def _run_pdf_bulk(app, state: PdfBulkState) -> None:
         if not chapters:
             await _safe_edit(
                 state.status_message,
-                f"<b>Nenhum capitulo encontrado</b>\n\nObra: {html.escape(state.title_name)}",
+                f"❌ <b>Nenhum capitulo encontrado</b>\n\n» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>",
             )
             return
 
@@ -234,36 +235,36 @@ async def _run_pdf_bulk(app, state: PdfBulkState) -> None:
             stopped = True
 
         lines = [
-            "<b>Download offline parado</b>" if stopped else "<b>Lote enviado para a fila</b>",
+            "⛔ <b>Download offline parado</b>" if stopped else "✅ <b>Lote enviado para a fila</b>",
             "",
-            f"<b>Obra:</b> {html.escape(state.title_name)}",
-            f"<b>Ordem:</b> {_order_label(state.order)}",
-            f"<b>PDFs na fila:</b> {state.enqueued}/{state.total}",
+            f"» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>",
+            f"» <b>Ordem:</b> <i>{_order_label(state.order)}</i>",
+            f"» <b>PDFs na fila:</b> <i>{state.enqueued}/{state.total}</i>",
         ]
         if stopped:
-            lines.append("Os PDFs que ja estavam na fila ainda podem chegar.")
+            lines.append("ℹ️ <i>Os PDFs que ja estavam na fila ainda podem chegar.</i>")
         if state.failed:
-            lines.append(f"<b>Falharam ao preparar:</b> {state.failed}")
+            lines.append(f"» <b>Falharam ao preparar:</b> <i>{state.failed}</i>")
             if state.failed_numbers:
-                lines.append(f"<b>Caps com falha:</b> {html.escape(', '.join(state.failed_numbers))}")
+                lines.append(f"» <b>Caps com falha:</b> <i>{html.escape(', '.join(state.failed_numbers))}</i>")
         if was_limited:
-            lines.append("<b>Obs:</b> o limite PDF_BULK_MAX_CHAPTERS cortou o lote.")
+            lines.append("ℹ️ <i>O limite PDF_BULK_MAX_CHAPTERS cortou o lote.</i>")
         if not stopped:
-            lines.extend(["", "Agora o bot vai enviar cada PDF aqui assim que ficar pronto."])
+            lines.extend(["", "✨ <i>Vou enviar cada PDF aqui assim que ficar pronto.</i>"])
         await _safe_edit(state.status_message, "\n".join(lines))
     except asyncio.CancelledError:
         state.cancel_event.set()
         await _safe_edit(
             state.status_message,
             (
-                "<b>Download offline parado</b>\n\n"
-                f"<b>Obra:</b> {html.escape(state.title_name)}\n"
-                f"<b>PDFs na fila:</b> {state.enqueued}/{state.total or '?'}\n"
-                "Os PDFs que ja estavam na fila ainda podem chegar."
+                "⛔ <b>Download offline parado</b>\n\n"
+                f"» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>\n"
+                f"» <b>PDFs na fila:</b> <i>{state.enqueued}/{state.total or '?'}</i>\n"
+                "ℹ️ <i>Os PDFs que ja estavam na fila ainda podem chegar.</i>"
             ),
         )
     except Exception as error:
-        text = f"<b>Nao consegui iniciar o lote de PDFs.</b>\n\n<code>{html.escape(str(error))}</code>"
+        text = f"❌ <b>Nao consegui iniciar o lote de PDFs.</b>\n\n<code>{html.escape(str(error))}</code>"
         if state.status_message:
             await _safe_edit(state.status_message, text)
         else:
@@ -287,7 +288,8 @@ async def request_pdf_bulk_for_title(
     if not can_use_pdf_bulk(user_id):
         await context.bot.send_message(
             chat_id,
-            "Esse envio em lote de PDFs e liberado so para membros autorizados.",
+            "🔒 <b>Funcao restrita</b>\n\nEsse envio em lote de PDFs e liberado so para membros autorizados.",
+            parse_mode="HTML",
         )
         return False
 
@@ -295,7 +297,8 @@ async def request_pdf_bulk_for_title(
     if active_key in _ACTIVE_BULK_KEYS:
         await context.bot.send_message(
             chat_id,
-            "Ja existe um lote de PDFs dessa obra sendo preparado para voce.",
+            "⏳ <b>Lote em andamento</b>\n\nJa existe um lote de PDFs dessa obra sendo preparado para voce.",
+            parse_mode="HTML",
         )
         return False
 
@@ -321,7 +324,8 @@ async def stop_pdf_bulk(context: ContextTypes.DEFAULT_TYPE, *, job_id: str, user
     if int(user_id) != int(state.user_id):
         await context.bot.send_message(
             state.chat_id,
-            "So quem iniciou esse lote pode parar o download.",
+            "🔒 <b>Acao restrita</b>\n\nSo quem iniciou esse lote pode parar o download.",
+            parse_mode="HTML",
         )
         return True
 
@@ -329,9 +333,9 @@ async def stop_pdf_bulk(context: ContextTypes.DEFAULT_TYPE, *, job_id: str, user
     await _safe_edit(
         state.status_message,
         (
-            "<b>Parando download offline...</b>\n\n"
-            f"<b>Obra:</b> {html.escape(state.title_name)}\n"
-            f"<b>PDFs ja colocados na fila:</b> {state.enqueued}/{state.total or '?'}"
+            "⏳ <b>Parando download offline...</b>\n\n"
+            f"» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>\n"
+            f"» <b>PDFs ja colocados na fila:</b> <i>{state.enqueued}/{state.total or '?'}</i>"
         ),
     )
     if state.task and not state.task.done():
@@ -357,7 +361,8 @@ async def pdfmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not can_use_pdf_bulk(user.id):
         await message.reply_text(
-            "Esse envio em lote de PDFs e liberado so para membros autorizados.",
+            "🔒 <b>Funcao restrita</b>\n\nEsse envio em lote de PDFs e liberado so para membros autorizados.",
+            parse_mode="HTML",
         )
         return
 
@@ -370,6 +375,7 @@ async def pdfmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         await message.reply_text(
             (
+                "📥 <b>Ler offline</b>\n\n"
                 "Use <code>/pdfmanga nome do manga</code>.\n\n"
                 "Para inverter a ordem, use <code>/pdfmanga nome desc</code>."
             ),
@@ -381,13 +387,13 @@ async def pdfmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loading = None
 
     if not title_ref:
-        loading = await message.reply_text("Buscando a obra para preparar os PDFs...")
+        loading = await message.reply_text("🔎 <b>Buscando a obra...</b>\nAguarde um instante.", parse_mode="HTML")
         try:
             results = await search_titles(query, limit=1)
         except Exception:
             results = []
         if not results:
-            await _safe_edit(loading, "Nao encontrei essa obra. Tente outro nome ou envie o ID/link da obra.")
+            await _safe_edit(loading, "❌ <b>Nao encontrei essa obra.</b>\n\nTente outro nome ou envie o ID/link da obra.")
             return
         title_ref = str(results[0].get("title_id") or "").strip()
 
