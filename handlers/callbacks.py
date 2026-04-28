@@ -286,7 +286,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
 
     if title_id and can_use_pdf_bulk(user_id):
-        rows.append([InlineKeyboardButton("Ler offline", callback_data=f"mb|offline|{title_id}")])
+        rows.append([InlineKeyboardButton("📥 Ler offline", callback_data=f"mb|offline|{title_id}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -295,10 +295,10 @@ def _offline_text(bundle: dict) -> str:
     title = html.escape(bundle.get("title") or "Manga")
     chapters = html.escape(str(bundle.get("total_chapters") or "?"))
     return (
-        f"<b>Ler offline</b>\n\n"
-        f"<b>Obra:</b> {title}\n"
-        f"<b>Capitulos:</b> {chapters}\n\n"
-        "Escolha a ordem para baixar os PDFs."
+        f"📥 <b>Ler offline</b>\n\n"
+        f"» <b>Obra:</b> <i>{title}</i>\n"
+        f"» <b>Capitulos:</b> <i>{chapters}</i>\n\n"
+        "✨ <i>Escolha como quer receber os PDFs.</i>"
     )
 
 
@@ -306,9 +306,9 @@ def _offline_keyboard(bundle: dict) -> InlineKeyboardMarkup:
     title_id = str(bundle.get("title_id") or "").strip()
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Baixar 1, 2, 3...", callback_data=f"mb|pdfall|{title_id}|asc")],
-            [InlineKeyboardButton("Baixar ultimo, anterior...", callback_data=f"mb|pdfall|{title_id}|desc")],
-            [InlineKeyboardButton("Voltar para a obra", callback_data=f"mb|title|{title_id}")],
+            [InlineKeyboardButton("📥 Primeiro ao ultimo", callback_data=f"mb|pdfall|{title_id}|asc")],
+            [InlineKeyboardButton("📥 Ultimo ao primeiro", callback_data=f"mb|pdfall|{title_id}|desc")],
+            [InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")],
         ]
     )
 
