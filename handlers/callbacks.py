@@ -27,6 +27,7 @@ from services.catalog_client import (
     prefetch_reader_payloads,
     prefetch_title_bundles,
 )
+from services.cakto_gateway import get_checkout_options
 from services.metrics import (
     get_last_read_entry,
     get_read_chapter_ids,
@@ -328,12 +329,19 @@ def _offline_locked_text(bundle: dict) -> str:
     return (
         f"🔒 <b>Conteúdo exclusivo para assinantes do {brand}</b>\n\n"
         f"» <b>Obra:</b> <i>{title}</i>\n\n"
-        "A leitura offline com todos os capítulos em PDF está bloqueada aqui no bot no momento.\n\n"
-        f"Para baixar capítulos em lote, escolher a ordem e ler sem internet, assine o <b>{brand}</b>."
+        "A leitura offline com todos os capítulos em PDF está bloqueada aqui no bot.\n\n"
+        "Escolha um plano abaixo. Assim que a Cakto aprovar o pagamento, "
+        "o bot libera seu ID automaticamente."
     )
 
 
-def _offline_locked_keyboard(bundle: dict) -> InlineKeyboardMarkup | None:
+def _offline_locked_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarkup | None:
+    options = get_checkout_options(user_id)
+    if options:
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton(option["label"], url=option["url"])] for option in options]
+        )
+
     subscribe_url = _normalize_url(PDF_BULK_SUBSCRIBE_URL)
     if not subscribe_url:
         return None
@@ -343,9 +351,9 @@ def _offline_locked_keyboard(bundle: dict) -> InlineKeyboardMarkup | None:
     )
 
 
-async def _send_offline_locked(target, bundle: dict) -> None:
+async def _send_offline_locked(target, bundle: dict, user_id: int | None) -> None:
     text = _offline_locked_text(bundle)
-    keyboard = _offline_locked_keyboard(bundle)
+    keyboard = _offline_locked_keyboard(bundle, user_id)
 
     message = getattr(target, "message", None)
     if message:
@@ -712,7 +720,7 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
         bundle = await get_title_bundle(title_id)
 
     if not can_use_pdf_bulk(user_id):
-        await _send_offline_locked(target, bundle)
+        await _send_offline_locked(target, bundle, user_id)
         return
 
     panel_message = await _render_panel(
@@ -915,7 +923,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if action == "offline" and len(parts) >= 3:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "Carregando offline")
+                    if can_use_pdf_bulk(user_id):
+                        await _show_loading_markup(query, "Carregando offline")
                     await send_offline_panel(query, context, parts[2], user_id, edit=True)
                     return
 
