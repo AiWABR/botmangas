@@ -139,10 +139,30 @@ PDF_BULK_DELAY_SECONDS = _env_float("PDF_BULK_DELAY_SECONDS", 0.2)
 PDF_BULK_SUBSCRIBE_URL = os.getenv("PDF_BULK_SUBSCRIBE_URL", REQUIRED_CHANNEL_URL).strip()
 CAKTO_WEBHOOK_SECRET = os.getenv("CAKTO_WEBHOOK_SECRET", "").strip()
 CAKTO_NOTIFY_USERS = _env_bool("CAKTO_NOTIFY_USERS", True)
-CAKTO_PLAN_1M_URL = os.getenv("CAKTO_PLAN_1M_URL", "").strip()
+CAKTO_PLAN_BRONZE_URL = (
+    os.getenv("CAKTO_PLAN_BRONZE_URL", "").strip()
+    or os.getenv("CAKTO_PLAN_WEEKLY_URL", "").strip()
+    or "https://pay.cakto.com.br/wyd3e3i"
+)
+CAKTO_PLAN_OURO_URL = (
+    os.getenv("CAKTO_PLAN_OURO_URL", "").strip()
+    or os.getenv("CAKTO_PLAN_MONTHLY_URL", "").strip()
+    or "https://pay.cakto.com.br/38kt683_866815"
+)
+CAKTO_PLAN_DIAMANTE_URL = (
+    os.getenv("CAKTO_PLAN_DIAMANTE_URL", "").strip()
+    or os.getenv("CAKTO_PLAN_ANNUAL_URL", "").strip()
+    or os.getenv("CAKTO_PLAN_12M_URL", "").strip()
+    or "https://pay.cakto.com.br/33mfwfe"
+)
+CAKTO_PLAN_RUBI_URL = (
+    os.getenv("CAKTO_PLAN_RUBI_URL", "").strip()
+    or "https://pay.cakto.com.br/57t5ieq"
+)
+CAKTO_PLAN_1M_URL = CAKTO_PLAN_OURO_URL
 CAKTO_PLAN_3M_URL = os.getenv("CAKTO_PLAN_3M_URL", "").strip()
 CAKTO_PLAN_6M_URL = os.getenv("CAKTO_PLAN_6M_URL", "").strip()
-CAKTO_PLAN_LIFETIME_URL = os.getenv("CAKTO_PLAN_LIFETIME_URL", "").strip()
+CAKTO_PLAN_LIFETIME_URL = CAKTO_PLAN_RUBI_URL
 TELEGRAPH_AUTHOR = os.getenv("TELEGRAPH_AUTHOR", BOT_BRAND).strip() or BOT_BRAND
 STICKER_DIVISOR = os.getenv("STICKER_DIVISOR", "").strip()
 PROMO_BANNER_URL = os.getenv(
