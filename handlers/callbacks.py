@@ -9,7 +9,12 @@ from telegram.ext import ContextTypes
 from core.background import fire_and_forget, fire_and_forget_sync, run_sync
 from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
 from core.pdf_queue import PdfJob, enqueue_pdf_job
-from handlers.pdf_bulk import can_use_pdf_bulk, request_pdf_bulk_for_title
+from handlers.pdf_bulk import (
+    can_use_pdf_bulk,
+    normalize_pdf_bulk_order,
+    request_pdf_bulk_for_title,
+    stop_pdf_bulk,
+)
 from handlers.search import edit_search_page, render_search_page
 from services.catalog_client import (
     flatten_chapters,
@@ -281,9 +286,31 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
 
     if title_id and can_use_pdf_bulk(user_id):
-        rows.append([InlineKeyboardButton("Baixar todos PDFs", callback_data=f"mb|pdfall|{title_id}")])
+        rows.append([InlineKeyboardButton("Ler offline", callback_data=f"mb|offline|{title_id}")])
 
     return InlineKeyboardMarkup(rows)
+
+
+def _offline_text(bundle: dict) -> str:
+    title = html.escape(bundle.get("title") or "Manga")
+    chapters = html.escape(str(bundle.get("total_chapters") or "?"))
+    return (
+        f"<b>Ler offline</b>\n\n"
+        f"<b>Obra:</b> {title}\n"
+        f"<b>Capitulos:</b> {chapters}\n\n"
+        "Escolha a ordem para baixar os PDFs."
+    )
+
+
+def _offline_keyboard(bundle: dict) -> InlineKeyboardMarkup:
+    title_id = str(bundle.get("title_id") or "").strip()
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Baixar 1, 2, 3...", callback_data=f"mb|pdfall|{title_id}|asc")],
+            [InlineKeyboardButton("Baixar ultimo, anterior...", callback_data=f"mb|pdfall|{title_id}|desc")],
+            [InlineKeyboardButton("Voltar para a obra", callback_data=f"mb|title|{title_id}")],
+        ]
+    )
 
 
 def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
@@ -621,6 +648,25 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "title", bundle["title_id"])
 
 
+async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
+    if not can_use_pdf_bulk(user_id):
+        return
+
+    bundle = get_cached_title_bundle(title_id)
+    if bundle is None:
+        bundle = await get_title_bundle(title_id)
+
+    panel_message = await _render_panel(
+        target,
+        _offline_text(bundle),
+        _offline_keyboard(bundle),
+        _pick_bundle_image(bundle),
+        edit=edit,
+    )
+    if panel_message:
+        _set_panel_state(panel_message.chat.id, panel_message.message_id, "offline", bundle["title_id"])
+
+
 async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, page: int, user_id: int | None, *, edit: bool):
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
@@ -794,10 +840,27 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _set_inflight_action(message.chat.id, message.message_id, current_action)
 
             try:
+                if action == "stopbulk" and len(parts) >= 3:
+                    stopped = await stop_pdf_bulk(context, job_id=parts[2], user_id=user_id)
+                    if stopped:
+                        await _safe_answer_query(query, "Parando o download offline.", show_alert=False)
+                    else:
+                        await _safe_answer_query(query, "Esse lote ja terminou ou expirou.", show_alert=True)
+                    return
+
                 if action == "title" and len(parts) >= 3:
                     await _safe_answer_query(query)
                     await _show_loading_markup(query, "⏳ Abrindo obra")
                     await send_title_panel(query, context, parts[2], user_id, edit=True)
+                    return
+
+                if action == "offline" and len(parts) >= 3:
+                    if not can_use_pdf_bulk(user_id):
+                        await _safe_answer_query(query, "Funcao liberada so para membros autorizados.", show_alert=True)
+                        return
+                    await _safe_answer_query(query)
+                    await _show_loading_markup(query, "Carregando offline")
+                    await send_offline_panel(query, context, parts[2], user_id, edit=True)
                     return
 
                 if action == "chap" and len(parts) >= 4:
@@ -829,18 +892,16 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 if action == "pdfall" and len(parts) >= 3:
-                    if not message:
-                        await _safe_answer_query(query, "Nao consegui encontrar esta conversa.", show_alert=True)
-                        return
                     if not can_use_pdf_bulk(user_id):
                         await _safe_answer_query(query, "Funcao liberada so para membros autorizados.", show_alert=True)
                         return
                     await _safe_answer_query(query, "Pedido recebido. Vou preparar os PDFs.", show_alert=False)
                     await request_pdf_bulk_for_title(
                         context,
-                        chat_id=message.chat.id,
+                        chat_id=message.chat.id if message else user_id,
                         user_id=user_id,
                         title_ref=parts[2],
+                        order=normalize_pdf_bulk_order(parts[3] if len(parts) >= 4 else "asc"),
                     )
                     return
 
