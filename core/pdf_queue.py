@@ -170,7 +170,11 @@ async def enqueue_pdf_job(app, job: PdfJob):
     }
 
     queue = bulk_queue if job.is_bulk else single_queue
-    await queue.put(job)
+    try:
+        await queue.put(job)
+    except BaseException:
+        _active_jobs.pop(job.chapter_id, None)
+        raise
     return single_queue.qsize() + bulk_queue.qsize()
 
 
