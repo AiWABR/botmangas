@@ -22,6 +22,7 @@ from utils.gatekeeper import ensure_channel_membership
 
 START_COOLDOWN = 1.0
 START_DEEP_LINK_TTL = 8.0
+START_OPEN_TIMEOUT = 28.0
 
 _START_USER_LOCKS: dict[int, asyncio.Lock] = {}
 _START_INFLIGHT: dict[str, float] = {}
@@ -129,6 +130,37 @@ async def _safe_delete_message(message) -> None:
         pass
     except Exception:
         pass
+
+
+async def _safe_edit_message(message, text: str) -> None:
+    if not message:
+        return
+    try:
+        await message.edit_text(text, parse_mode="HTML")
+    except TelegramError:
+        pass
+    except Exception:
+        pass
+
+
+async def _send_start_loading(message, *, kind: str):
+    if kind == "chapter":
+        text = (
+            "⏳ <b>Abrindo capitulo no acervo...</b>\n\n"
+            "» <b>Status:</b> <i>carregando leitura</i>\n"
+            "✨ <i>Aguarde um instante.</i>"
+        )
+    else:
+        text = (
+            "⏳ <b>Abrindo nosso acervo...</b>\n\n"
+            "» <b>Status:</b> <i>carregando obra</i>\n"
+            "✨ <i>Aguarde um instante.</i>"
+        )
+
+    try:
+        return await message.reply_text(text, parse_mode="HTML")
+    except Exception:
+        return None
 
 
 async def _handle_referral(arg: str, user, message) -> None:
@@ -241,12 +273,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             title_id = _extract_title_id(arg)
             if title_id:
-                await send_title_panel(message, context, title_id, user.id, edit=False)
+                loading_msg = await _send_start_loading(message, kind="title")
+                try:
+                    await asyncio.wait_for(
+                        send_title_panel(message, context, title_id, user.id, edit=False),
+                        timeout=START_OPEN_TIMEOUT,
+                    )
+                    await _safe_delete_message(loading_msg)
+                except asyncio.TimeoutError:
+                    await _safe_edit_message(
+                        loading_msg,
+                        (
+                            "⏳ <b>Essa obra demorou demais para abrir.</b>\n\n"
+                            "Tente novamente em instantes."
+                        ),
+                    )
+                except Exception as error:
+                    print("ERRO START OBRA:", repr(error))
+                    await _safe_edit_message(
+                        loading_msg,
+                        "❌ <b>Nao foi possivel abrir essa obra agora.</b>\n\nTente novamente em instantes.",
+                    )
                 return
 
             chapter_id = _extract_chapter_id(arg)
             if chapter_id:
-                await send_chapter_panel(message, context, chapter_id, user.id, edit=False)
+                loading_msg = await _send_start_loading(message, kind="chapter")
+                try:
+                    await asyncio.wait_for(
+                        send_chapter_panel(message, context, chapter_id, user.id, edit=False),
+                        timeout=START_OPEN_TIMEOUT,
+                    )
+                    await _safe_delete_message(loading_msg)
+                except asyncio.TimeoutError:
+                    await _safe_edit_message(
+                        loading_msg,
+                        (
+                            "⏳ <b>Esse capitulo demorou demais para abrir.</b>\n\n"
+                            "Tente novamente em instantes."
+                        ),
+                    )
+                except Exception as error:
+                    print("ERRO START CAPITULO:", repr(error))
+                    await _safe_edit_message(
+                        loading_msg,
+                        "❌ <b>Nao foi possivel abrir esse capitulo agora.</b>\n\nTente novamente em instantes.",
+                    )
                 return
 
             await _send_welcome(message, user.first_name or "leitor")
