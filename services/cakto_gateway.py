@@ -8,10 +8,10 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from config import (
-    CAKTO_PLAN_1M_URL,
-    CAKTO_PLAN_3M_URL,
-    CAKTO_PLAN_6M_URL,
-    CAKTO_PLAN_LIFETIME_URL,
+    CAKTO_PLAN_BRONZE_URL,
+    CAKTO_PLAN_DIAMANTE_URL,
+    CAKTO_PLAN_OURO_URL,
+    CAKTO_PLAN_RUBI_URL,
 )
 from services.offline_access import (
     get_offline_access,
@@ -74,10 +74,10 @@ REVOKED_STATUSES = {
 }
 
 PLAN_CHECKOUTS = (
-    ("1m", "📅 1 mes", CAKTO_PLAN_1M_URL),
-    ("3m", "📅 3 meses", CAKTO_PLAN_3M_URL),
-    ("6m", "📅 6 meses", CAKTO_PLAN_6M_URL),
-    ("lifetime", "♾ Vitalicio", CAKTO_PLAN_LIFETIME_URL),
+    ("bronze", "🥉 Bronze semanal - R$ 7,99", CAKTO_PLAN_BRONZE_URL),
+    ("ouro", "🏆 Ouro mensal - R$ 17,99", CAKTO_PLAN_OURO_URL),
+    ("diamante", "💎 Diamante anual - R$ 79,99", CAKTO_PLAN_DIAMANTE_URL),
+    ("rubi", "♦️ Rubi vitalicio - R$ 249,00", CAKTO_PLAN_RUBI_URL),
 )
 
 _TRACKING_RE = re.compile(
