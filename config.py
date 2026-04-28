@@ -61,6 +61,16 @@ def _env_optional_int(name: str) -> int | None:
         return None
 
 
+def _env_int_list(name: str) -> list[int]:
+    raw = os.getenv(name, "").replace(";", ",")
+    values: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if item.isdigit():
+            values.append(int(item))
+    return values
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name, "").strip().lower()
     if not raw:
@@ -123,6 +133,9 @@ PDF_QUEUE_LIMIT = _env_int("PDF_QUEUE_LIMIT", 30)
 PDF_WORKERS_SINGLE = _env_int("PDF_WORKERS_SINGLE", 1)
 PDF_WORKERS_BULK = _env_int("PDF_WORKERS_BULK", 1)
 PDF_PROTECT_CONTENT = _env_bool("PDF_PROTECT_CONTENT", True)
+PDF_BULK_ALLOWED_IDS = sorted(set(ADMIN_IDS + _env_int_list("PDF_BULK_ALLOWED_IDS")))
+PDF_BULK_MAX_CHAPTERS = _env_int("PDF_BULK_MAX_CHAPTERS", 0)
+PDF_BULK_DELAY_SECONDS = _env_float("PDF_BULK_DELAY_SECONDS", 0.2)
 TELEGRAPH_AUTHOR = os.getenv("TELEGRAPH_AUTHOR", BOT_BRAND).strip() or BOT_BRAND
 STICKER_DIVISOR = os.getenv("STICKER_DIVISOR", "").strip()
 PROMO_BANNER_URL = os.getenv(
