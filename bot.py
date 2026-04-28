@@ -24,7 +24,7 @@ from handlers.help import ajuda
 from handlers.inline import inline_query
 from handlers.metricas import metricas, metricas_limpar
 from handlers.novoseps import auto_post_new_eps_job, postnovoseps
-from handlers.postmanga import postmanga
+from handlers.pdf_bulk import pdfmanga
 from handlers.referral import indicacoes, referral_button
 from handlers.referral_admin import auto_referral_check_job, refstats
 from handlers.search import buscar
@@ -117,6 +117,8 @@ def main() -> None:
     app.add_handler(CommandHandler("postnovoseps", postnovoseps))
     app.add_handler(CommandHandler("postnovoscaps", postnovoseps))
     app.add_handler(CommandHandler("postmanga", postmanga))
+    app.add_handler(CommandHandler("pdfmanga", pdfmanga))
+    app.add_handler(CommandHandler("pdfall", pdfmanga))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("indicacoes", indicacoes))
     app.add_handler(CommandHandler("refstats", refstats))
