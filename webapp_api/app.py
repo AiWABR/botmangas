@@ -2,18 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from config import BASE_DIR, DATA_DIR, HOME_SECTION_LIMIT, PREFERRED_CHAPTER_LANG
+from config import (
+    BASE_DIR,
+    BOT_BRAND,
+    BOT_TOKEN,
+    CAKTO_NOTIFY_USERS,
+    CAKTO_WEBHOOK_SECRET,
+    DATA_DIR,
+    HOME_SECTION_LIMIT,
+    PREFERRED_CHAPTER_LANG,
+)
 from services.catalog_client import (
     flatten_chapters,
     get_chapter_reader_payload,
@@ -23,8 +34,10 @@ from services.catalog_client import (
     get_title_search,
     search_titles,
 )
+from services.cakto_gateway import extract_webhook_secret_values, process_cakto_webhook
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, mark_chapter_read
+from services.offline_access import init_offline_access_db
 
 MINIAPP_DIR = BASE_DIR / "miniapp"
 PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
@@ -42,6 +55,8 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+init_offline_access_db()
 
 
 class ProgressPayload(BaseModel):
@@ -427,6 +442,108 @@ async def _chapter_payload(chapter_id: str, lang: str) -> dict[str, Any]:
 @app.get("/api/ping")
 async def ping() -> dict[str, bool]:
     return {"ok": True}
+
+
+def _cakto_secret_candidates(request: Request, payload: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    for key in ("secret", "token"):
+        value = request.query_params.get(key)
+        if value:
+            candidates.append(value.strip())
+
+    for header_name in (
+        "x-cakto-secret",
+        "x-webhook-secret",
+        "x-secret",
+        "x-cakto-token",
+    ):
+        value = request.headers.get(header_name)
+        if value:
+            candidates.append(value.strip())
+
+    authorization = request.headers.get("authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        candidates.append(authorization.split(" ", 1)[1].strip())
+    elif authorization:
+        candidates.append(authorization)
+
+    candidates.extend(extract_webhook_secret_values(payload))
+    return [item for item in candidates if item]
+
+
+def _cakto_secret_is_valid(request: Request, payload: dict[str, Any]) -> bool:
+    expected = (CAKTO_WEBHOOK_SECRET or "").strip()
+    if not expected:
+        return True
+    return expected in _cakto_secret_candidates(request, payload)
+
+
+async def _notify_cakto_user(result: dict[str, Any]) -> None:
+    if not CAKTO_NOTIFY_USERS or not BOT_TOKEN:
+        return
+
+    access = result.get("access") or {}
+    if access.get("duplicate_event"):
+        return
+
+    user_id = result.get("user_id")
+    if not user_id:
+        return
+
+    action = result.get("action")
+    brand = html.escape(BOT_BRAND or "Mangas Baltigo")
+
+    if action == "granted":
+        plan = html.escape(result.get("plan_label") or access.get("plan_label") or "plano")
+        expires_at = access.get("expires_at") or "vitalicio"
+        text = (
+            "✅ <b>Leitura offline liberada!</b>\n\n"
+            f"» <b>Plano:</b> <i>{plan}</i>\n"
+            f"» <b>Validade:</b> <i>{html.escape(str(expires_at))}</i>\n\n"
+            f"Agora o envio de todos os capitulos em PDF esta ativo no <b>{brand}</b>."
+        )
+    elif action == "revoked":
+        text = (
+            "🔒 <b>Leitura offline bloqueada</b>\n\n"
+            "A Cakto avisou cancelamento, reembolso ou chargeback dessa assinatura."
+        )
+    else:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": int(user_id),
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+    except Exception:
+        pass
+
+
+@app.post("/api/webhooks/cakto")
+async def api_cakto_webhook(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="JSON invalido.") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload do webhook precisa ser JSON object.")
+
+    if not _cakto_secret_is_valid(request, payload):
+        raise HTTPException(status_code=401, detail="Webhook Cakto nao autorizado.")
+
+    result = process_cakto_webhook(payload)
+    if result.get("action") in {"granted", "revoked"}:
+        asyncio.create_task(_notify_cakto_user(result))
+
+    return result
 
 
 @app.get("/api/home")
