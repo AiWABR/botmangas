@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from core.background import fire_and_forget, fire_and_forget_sync, run_sync
 from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
 from core.pdf_queue import PdfJob, enqueue_pdf_job
+from handlers.pdf_bulk import can_use_pdf_bulk, request_pdf_bulk_for_title
 from handlers.search import edit_search_page, render_search_page
 from services.catalog_client import (
     flatten_chapters,
@@ -223,7 +224,7 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
     )
 
 
-def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboardMarkup:
+def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     title_id = str(bundle.get("title_id") or "").strip()
     latest_chapter = bundle.get("latest_chapter") or {}
@@ -278,6 +279,9 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None) -> InlineKeyboa
 
     if bundle.get("anilist_url"):
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
+
+    if title_id and can_use_pdf_bulk(user_id):
+        rows.append([InlineKeyboardButton("Baixar todos PDFs", callback_data=f"mb|pdfall|{title_id}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -609,7 +613,7 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
     panel_message = await _render_panel(
         target,
         _title_text(bundle, last_read),
-        _title_keyboard(bundle, last_read),
+        _title_keyboard(bundle, last_read, user_id),
         _pick_bundle_image(bundle),
         edit=edit,
     )
@@ -822,6 +826,22 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await _safe_answer_query(query)
                     await _show_loading_markup(query, "⏳ Preparando leitura rapida")
                     await _send_telegraph(query, parts[2])
+                    return
+
+                if action == "pdfall" and len(parts) >= 3:
+                    if not message:
+                        await _safe_answer_query(query, "Nao consegui encontrar esta conversa.", show_alert=True)
+                        return
+                    if not can_use_pdf_bulk(user_id):
+                        await _safe_answer_query(query, "Funcao liberada so para membros autorizados.", show_alert=True)
+                        return
+                    await _safe_answer_query(query, "Pedido recebido. Vou preparar os PDFs.", show_alert=False)
+                    await request_pdf_bulk_for_title(
+                        context,
+                        chat_id=message.chat.id,
+                        user_id=user_id,
+                        title_ref=parts[2],
+                    )
                     return
 
                 if action == "pdf" and len(parts) >= 3:
