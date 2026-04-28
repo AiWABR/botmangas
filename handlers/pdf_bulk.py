@@ -26,6 +26,7 @@ from services.catalog_client import (
     get_title_bundle,
     search_titles,
 )
+from services.offline_access import is_offline_user_allowed
 from utils.gatekeeper import ensure_channel_membership
 
 ORDER_ASC = "asc"
@@ -56,7 +57,13 @@ class PdfBulkState:
 
 
 def can_use_pdf_bulk(user_id: int | None) -> bool:
-    return bool(user_id and int(user_id) in _ALLOWED_BULK_USERS)
+    return bool(
+        user_id
+        and (
+            int(user_id) in _ALLOWED_BULK_USERS
+            or is_offline_user_allowed(user_id)
+        )
+    )
 
 
 def normalize_pdf_bulk_order(order: str | None) -> str:
