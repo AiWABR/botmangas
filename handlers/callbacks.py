@@ -7,7 +7,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import ContextTypes
 
 from core.background import fire_and_forget, fire_and_forget_sync, run_sync
-from config import CHAPTERS_PER_PAGE, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
+from config import BOT_BRAND, CHAPTERS_PER_PAGE, PDF_BULK_SUBSCRIBE_URL, PREFERRED_CHAPTER_LANG, WEBAPP_BASE_URL
 from core.pdf_queue import PdfJob, enqueue_pdf_job
 from handlers.pdf_bulk import (
     can_use_pdf_bulk,
@@ -285,7 +285,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
     if bundle.get("anilist_url"):
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
 
-    if title_id and can_use_pdf_bulk(user_id):
+    if title_id:
         rows.append([InlineKeyboardButton("📥 Ler offline", callback_data=f"mb|offline|{title_id}")])
 
     return InlineKeyboardMarkup(rows)
@@ -311,6 +311,64 @@ def _offline_keyboard(bundle: dict) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")],
         ]
     )
+
+
+def _normalize_url(url: str) -> str:
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    if url.startswith(("http://", "https://", "tg://")):
+        return url
+    return f"https://{url}"
+
+
+def _offline_locked_text(bundle: dict) -> str:
+    title = html.escape(bundle.get("title") or "Manga")
+    brand = html.escape(BOT_BRAND or "Mangas Baltigo")
+    return (
+        f"🔒 <b>Conteúdo exclusivo para assinantes do {brand}</b>\n\n"
+        f"» <b>Obra:</b> <i>{title}</i>\n\n"
+        "A leitura offline com todos os capítulos em PDF está bloqueada aqui no bot no momento.\n\n"
+        f"Para baixar capítulos em lote, escolher a ordem e ler sem internet, assine o <b>{brand}</b>."
+    )
+
+
+def _offline_locked_keyboard(bundle: dict) -> InlineKeyboardMarkup | None:
+    subscribe_url = _normalize_url(PDF_BULK_SUBSCRIBE_URL)
+    if not subscribe_url:
+        return None
+    brand = BOT_BRAND or "Mangas Baltigo"
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"✨ Assinar {brand}", url=subscribe_url)]]
+    )
+
+
+async def _send_offline_locked(target, bundle: dict) -> None:
+    text = _offline_locked_text(bundle)
+    keyboard = _offline_locked_keyboard(bundle)
+
+    message = getattr(target, "message", None)
+    if message:
+        try:
+            await message.reply_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        await target.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
 
 
 def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
@@ -649,12 +707,13 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 
 
 async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
-    if not can_use_pdf_bulk(user_id):
-        return
-
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
         bundle = await get_title_bundle(title_id)
+
+    if not can_use_pdf_bulk(user_id):
+        await _send_offline_locked(target, bundle)
+        return
 
     panel_message = await _render_panel(
         target,
@@ -855,9 +914,6 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 if action == "offline" and len(parts) >= 3:
-                    if not can_use_pdf_bulk(user_id):
-                        await _safe_answer_query(query, "Funcao liberada so para membros autorizados.", show_alert=True)
-                        return
                     await _safe_answer_query(query)
                     await _show_loading_markup(query, "Carregando offline")
                     await send_offline_panel(query, context, parts[2], user_id, edit=True)
