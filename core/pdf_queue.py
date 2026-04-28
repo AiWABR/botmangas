@@ -1,4 +1,5 @@
 import asyncio
+import html
 from dataclasses import dataclass
 
 from telegram.error import TimedOut
@@ -16,11 +17,16 @@ class PdfJob:
     images: list[str]
     caption: str
     is_bulk: bool = False
+    send_status: bool = True
 
 
 _single_workers = []
 _bulk_workers = []
 _active_jobs = {}
+
+
+def _html(value) -> str:
+    return html.escape(str(value or ""))
 
 
 async def _safe_edit(message, text: str):
@@ -44,7 +50,7 @@ async def _send_document_safe(bot, chat_id: int, pdf_path: str, pdf_name: str, c
         return True
     except TimedOut:
         try:
-            await bot.send_message(chat_id, "O envio demorou mais que o esperado. Confere se o arquivo já chegou.")
+            await bot.send_message(chat_id, "O envio demorou mais que o esperado. Confere se o arquivo ja chegou.")
         except Exception:
             pass
         return True
@@ -53,10 +59,10 @@ async def _send_document_safe(bot, chat_id: int, pdf_path: str, pdf_name: str, c
 async def _progress(entry, title_name: str, chapter_number: str, done: int, total: int):
     pct = int((done / max(total, 1)) * 100)
     text = (
-        "📥 <b>Gerando PDF</b>\n\n"
-        f"📚 <b>Obra:</b> {title_name}\n"
-        f"📖 <b>Capítulo:</b> {chapter_number}\n"
-        f"⏳ <b>Progresso:</b> {pct}%"
+        "<b>Gerando PDF</b>\n\n"
+        f"<b>Obra:</b> {_html(title_name)}\n"
+        f"<b>Capitulo:</b> {_html(chapter_number)}\n"
+        f"<b>Progresso:</b> {pct}%"
     )
     for message in list(entry["status_messages"]):
         await _safe_edit(message, text)
@@ -86,14 +92,29 @@ async def _process_job(app, job: PdfJob):
             await _safe_edit(
                 message,
                 (
-                    "✅ <b>PDF pronto</b>\n\n"
-                    f"📚 <b>Obra:</b> {job.title_name}\n"
-                    f"📖 <b>Capítulo:</b> {job.chapter_number}"
+                    "<b>PDF pronto</b>\n\n"
+                    f"<b>Obra:</b> {_html(job.title_name)}\n"
+                    f"<b>Capitulo:</b> {_html(job.chapter_number)}"
                 ),
             )
     except Exception as error:
         for message in list(entry["status_messages"]):
-            await _safe_edit(message, f"❌ Falha ao gerar PDF:\n<code>{error}</code>")
+            await _safe_edit(message, f"Falha ao gerar PDF:\n<code>{html.escape(str(error))}</code>")
+        if not entry["status_messages"]:
+            for waiter in entry["waiters"]:
+                try:
+                    await app.bot.send_message(
+                        waiter["chat_id"],
+                        (
+                            "<b>Falha ao gerar PDF</b>\n\n"
+                            f"<b>Obra:</b> {_html(job.title_name)}\n"
+                            f"<b>Capitulo:</b> {_html(job.chapter_number)}\n"
+                            f"<code>{html.escape(str(error))}</code>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
     finally:
         _active_jobs.pop(job.chapter_id, None)
 
@@ -115,32 +136,37 @@ async def enqueue_pdf_job(app, job: PdfJob):
     if job.chapter_id in _active_jobs:
         entry = _active_jobs[job.chapter_id]
         entry["waiters"].append({"chat_id": job.chat_id, "caption": job.caption})
+        if job.send_status:
+            status = await app.bot.send_message(
+                job.chat_id,
+                (
+                    "<b>Pedido recebido</b>\n\n"
+                    f"<b>Obra:</b> {_html(job.title_name)}\n"
+                    f"<b>Capitulo:</b> {_html(job.chapter_number)}\n"
+                    "Status: <b>ja esta em processamento</b>"
+                ),
+                parse_mode="HTML",
+            )
+            entry["status_messages"].append(status)
+        return single_queue.qsize() + bulk_queue.qsize()
+
+    status_messages = []
+    if job.send_status:
         status = await app.bot.send_message(
             job.chat_id,
             (
-                "⏳ <b>Pedido recebido</b>\n\n"
-                f"📚 <b>Obra:</b> {job.title_name}\n"
-                f"📖 <b>Capítulo:</b> {job.chapter_number}\n"
-                "Status: <b>já está em processamento</b>"
+                "<b>Pedido recebido</b>\n\n"
+                f"<b>Obra:</b> {_html(job.title_name)}\n"
+                f"<b>Capitulo:</b> {_html(job.chapter_number)}\n"
+                "Status: <b>na fila</b>"
             ),
             parse_mode="HTML",
         )
-        entry["status_messages"].append(status)
-        return single_queue.qsize() + bulk_queue.qsize()
+        status_messages.append(status)
 
-    status = await app.bot.send_message(
-        job.chat_id,
-        (
-            "⏳ <b>Pedido recebido</b>\n\n"
-            f"📚 <b>Obra:</b> {job.title_name}\n"
-            f"📖 <b>Capítulo:</b> {job.chapter_number}\n"
-            "Status: <b>na fila</b>"
-        ),
-        parse_mode="HTML",
-    )
     _active_jobs[job.chapter_id] = {
         "waiters": [{"chat_id": job.chat_id, "caption": job.caption}],
-        "status_messages": [status],
+        "status_messages": status_messages,
     }
 
     queue = bulk_queue if job.is_bulk else single_queue
