@@ -103,7 +103,7 @@ def _build_description(item: dict) -> str:
         parts.append(f"Cap. {item['latest_chapter']}")
     elif item.get("rating"):
         parts.append(f"Nota {item['rating']}")
-    return " • ".join(parts) or "Abrir obra no bot"
+    return " - ".join(parts) or "Abrir obra no bot"
 
 
 def _build_message_text(item: dict) -> str:
@@ -114,20 +114,20 @@ def _build_message_text(item: dict) -> str:
     image_url = str(item.get("cover_url") or "").strip()
 
     if image_url:
-        title_line = f'<b><a href="{html.escape(image_url, quote=True)}">📚</a> {title}</b>'
+        title_line = f'<b><a href="{html.escape(image_url, quote=True)}">Manga</a> {title}</b>'
     else:
-        title_line = f"<b>📚 {title}</b>"
+        title_line = f"<b>Manga {title}</b>"
 
-    meta_lines = [f"» <b>Status:</b> <i>{status}</i>"]
+    meta_lines = [f"<b>Status:</b> <i>{status}</i>"]
     if latest != "N/A":
-        meta_lines.append(f"» <b>Ultimo capitulo:</b> <i>{latest}</i>")
+        meta_lines.append(f"<b>Ultimo capitulo:</b> <i>{latest}</i>")
     if rating != "N/A":
-        meta_lines.append(f"» <b>Nota:</b> <i>{rating}</i>")
+        meta_lines.append(f"<b>Nota:</b> <i>{rating}</i>")
 
     text = (
         f"{title_line}\n\n"
         f"{chr(10).join(meta_lines)}\n\n"
-        f"✨ <i>Abra no @{html.escape(BOT_USERNAME)} e continue a leitura pelo {html.escape(BOT_BRAND)}.</i>"
+        f"<i>Abra no @{html.escape(BOT_USERNAME)} e continue a leitura pelo {html.escape(BOT_BRAND)}.</i>"
     )
 
     if image_url:
@@ -163,11 +163,12 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not title_id:
             continue
 
-        rows = [[InlineKeyboardButton("📚 Abrir obra", url=f"https://t.me/{BOT_USERNAME}?start=title_{title_id}")]]
+        rows = [
+            [InlineKeyboardButton("Abrir obra", callback_data=f"mb|title|{title_id}")],
+            [InlineKeyboardButton("Lista de capitulos", callback_data=f"mb|chap|{title_id}|1")],
+        ]
         if item.get("chapter_id"):
-            rows.append(
-                [InlineKeyboardButton("🆕 Ultimo capitulo", url=f"https://t.me/{BOT_USERNAME}?start=ch_{item['chapter_id']}")]
-            )
+            rows.append([InlineKeyboardButton("Ultimo capitulo", callback_data=f"mb|read|{item['chapter_id']}")])
 
         articles.append(
             InlineQueryResultArticle(
