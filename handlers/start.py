@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL, WEBAPP_BASE_URL
 from core.background import fire_and_forget_sync, run_sync
-from handlers.callbacks import send_chapter_panel, send_title_panel
+from handlers.callbacks import send_chapter_panel, send_chapters_page, send_title_panel
 from services.catalog_client import get_cached_home_snapshot, schedule_warm_catalog_cache
 from services.metrics import mark_user_seen
 from services.referral_db import (
@@ -30,6 +30,10 @@ _START_INFLIGHT: dict[str, float] = {}
 
 def _extract_title_id(arg: str) -> str:
     return arg[6:] if arg.startswith("title_") else ""
+
+
+def _extract_chapters_title_id(arg: str) -> str:
+    return arg[9:] if arg.startswith("chapters_") else ""
 
 
 def _extract_chapter_id(arg: str) -> str:
@@ -148,6 +152,12 @@ async def _send_start_loading(message, *, kind: str):
         text = (
             "⏳ <b>Abrindo capitulo no acervo...</b>\n\n"
             "» <b>Status:</b> <i>carregando leitura</i>\n"
+            "✨ <i>Aguarde um instante.</i>"
+        )
+    elif kind == "chapters":
+        text = (
+            "⏳ <b>Abrindo lista de capítulos...</b>\n\n"
+            "» <b>Status:</b> <i>carregando acervo</i>\n"
             "✨ <i>Aguarde um instante.</i>"
         )
     else:
@@ -293,6 +303,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await _safe_edit_message(
                         loading_msg,
                         "❌ <b>Nao foi possivel abrir essa obra agora.</b>\n\nTente novamente em instantes.",
+                    )
+                return
+
+            chapters_title_id = _extract_chapters_title_id(arg)
+            if chapters_title_id:
+                loading_msg = await _send_start_loading(message, kind="chapters")
+                try:
+                    await asyncio.wait_for(
+                        send_chapters_page(message, context, chapters_title_id, 1, user.id, edit=False),
+                        timeout=START_OPEN_TIMEOUT,
+                    )
+                    await _safe_delete_message(loading_msg)
+                except asyncio.TimeoutError:
+                    await _safe_edit_message(
+                        loading_msg,
+                        (
+                            "⏳ <b>Essa lista demorou demais para abrir.</b>\n\n"
+                            "Tente novamente em instantes."
+                        ),
+                    )
+                except Exception as error:
+                    print("ERRO START LISTA CAPITULOS:", repr(error))
+                    await _safe_edit_message(
+                        loading_msg,
+                        "❌ <b>Não foi possível abrir a lista de capítulos agora.</b>\n\nTente novamente em instantes.",
                     )
                 return
 
