@@ -21,6 +21,7 @@ from services.catalog_client import (
     get_cached_chapter_reader_payload,
     get_cached_title_overview,
     get_cached_title_bundle,
+    get_cached_title_summary,
     get_chapter_reader_payload,
     get_title_overview,
     get_title_bundle,
@@ -140,17 +141,45 @@ def _pick_bundle_image(bundle: dict) -> str:
     ).strip()
 
 
-def _fallback_title_bundle(title_id: str, *, title: str = "Manga") -> dict:
+def _summary_latest_chapter(summary: dict) -> dict | None:
+    latest = summary.get("latest_chapter")
+    if isinstance(latest, dict):
+        return latest
+
+    chapter_id = str(summary.get("chapter_id") or "").strip()
+    if not chapter_id:
+        return None
+
+    return {
+        "chapter_id": chapter_id,
+        "chapter_number": str(latest or "").strip(),
+        "chapter_language": summary.get("language") or PREFERRED_CHAPTER_LANG,
+    }
+
+
+def _fallback_title_bundle(title_id: str, *, title: str = "Manga", summary: dict | None = None) -> dict:
     title_id = str(title_id or "").strip()
+    summary = summary or get_cached_title_summary(title_id) or {}
+    display_title = (
+        summary.get("display_title")
+        or summary.get("title")
+        or title
+        or "Manga"
+    )
+    cover_url = summary.get("cover_url") or ""
+
     return {
         "title_id": title_id,
-        "title": title or "Manga",
-        "display_title": title or "Manga",
-        "status": "carregando",
+        "title": display_title,
+        "display_title": display_title,
+        "cover_url": cover_url,
+        "background_url": summary.get("background_url") or cover_url,
+        "status": summary.get("status") or "carregando",
+        "rating": summary.get("rating") or "",
         "chapters": [],
         "languages": [],
         "total_chapters": 0,
-        "latest_chapter": None,
+        "latest_chapter": _summary_latest_chapter(summary),
         "genres": [],
         "chapters_partial": True,
     }
@@ -160,6 +189,11 @@ async def _load_title_panel_bundle(title_id: str) -> dict:
     cached = get_cached_title_bundle(title_id) or get_cached_title_overview(title_id)
     if cached is not None:
         return cached
+
+    summary = get_cached_title_summary(title_id)
+    if summary is not None:
+        prefetch_title_bundles([title_id], limit=1)
+        return _fallback_title_bundle(title_id, summary=summary)
 
     try:
         return await asyncio.wait_for(get_title_overview(title_id), timeout=TITLE_PANEL_FAST_TIMEOUT)
