@@ -77,7 +77,7 @@ PLAN_CHECKOUTS = (
     ("bronze", "🥉 Bronze semanal - R$ 7,99", CAKTO_PLAN_BRONZE_URL),
     ("ouro", "🏆 Ouro mensal - R$ 17,99", CAKTO_PLAN_OURO_URL),
     ("diamante", "💎 Diamante anual - R$ 79,99", CAKTO_PLAN_DIAMANTE_URL),
-    ("rubi", "♦️ Rubi vitalicio - R$ 249,00", CAKTO_PLAN_RUBI_URL),
+    ("rubi", "♦️ Rubi vitalício - R$ 249,00", CAKTO_PLAN_RUBI_URL),
 )
 
 _TRACKING_RE = re.compile(
