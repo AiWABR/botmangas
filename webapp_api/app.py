@@ -5,6 +5,7 @@ import hashlib
 import html
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,7 @@ from services.catalog_client import (
 )
 from services.cakto_gateway import extract_webhook_secret_values, process_cakto_webhook
 from services.media_pipeline import resolve_telegraph_asset_path
-from services.metrics import get_last_read_entry, mark_chapter_read
+from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
 from services.profile_store import (
     list_user_favorites,
@@ -227,6 +228,42 @@ def _public_last_read(entry: dict[str, Any] | None) -> dict[str, Any] | None:
         "updated_at": entry.get("updated_at") or "",
         "page_index": int(entry.get("page_index") or 0),
         "total_pages": int(entry.get("total_pages") or 0),
+    }
+
+
+def _public_updated_at_ms(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return int(time.time() * 1000)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(text[:19], fmt).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            pass
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return int(time.time() * 1000)
+
+
+def _public_history_item(user_id: str, item: dict[str, Any], progress_data: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    title_id = item.get("title_id") or ""
+    progress = progress_data.get(_progress_key(user_id, title_id)) or {}
+    page_index = int(progress.get("page_index") or 1)
+    total_pages = int(progress.get("total_pages") or 0)
+
+    return {
+        "title_id": title_id,
+        "title_name": item.get("title_name") or progress.get("title_name") or "",
+        "chapter_id": item.get("chapter_id") or progress.get("chapter_id") or "",
+        "chapter_number": item.get("chapter_number") or progress.get("chapter_number") or "",
+        "chapter_url": item.get("chapter_url") or progress.get("chapter_url") or "",
+        "page_index": page_index,
+        "total_pages": total_pages,
+        "cover_url": progress.get("cover_url") or "",
+        "updated_at": _public_updated_at_ms(progress.get("updated_at") or item.get("updated_at")),
     }
 
 
@@ -793,6 +830,19 @@ async def api_chapter(chapter_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)
 async def api_get_progress(user_id: str = Query(...), title_id: str = Query(...)):
     data = _load_progress()
     return _public_last_read(data.get(_progress_key(user_id, title_id))) or {}
+
+
+@app.get("/api/history")
+async def api_get_history(user_id: str = Query(...), limit: int = Query(80, ge=1, le=200)):
+    progress_data = _load_progress()
+    items = get_recently_read(user_id, limit=limit)
+    return {
+        "items": [
+            _public_history_item(user_id, item, progress_data)
+            for item in items
+            if item.get("title_id") and item.get("chapter_id")
+        ]
+    }
 
 
 @app.post("/api/progress")
