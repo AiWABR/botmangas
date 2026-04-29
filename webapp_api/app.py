@@ -496,12 +496,12 @@ async def _notify_cakto_user(result: dict[str, Any]) -> None:
 
     if action == "granted":
         plan = html.escape(result.get("plan_label") or access.get("plan_label") or "plano")
-        expires_at = access.get("expires_at") or "vitalicio"
+        expires_at = access.get("expires_at") or "vitalício"
         text = (
             "✅ <b>Leitura offline liberada!</b>\n\n"
             f"» <b>Plano:</b> <i>{plan}</i>\n"
             f"» <b>Validade:</b> <i>{html.escape(str(expires_at))}</i>\n\n"
-            f"Agora o envio de todos os capitulos em PDF esta ativo no <b>{brand}</b>."
+            f"Agora o envio de todos os capítulos em PDF está ativo no <b>{brand}</b>."
         )
     elif action == "revoked":
         text = (
@@ -546,14 +546,14 @@ async def api_cakto_webhook(request: Request):
     try:
         payload = await request.json()
     except Exception as error:
-        raise HTTPException(status_code=400, detail="JSON invalido.") from error
+        raise HTTPException(status_code=400, detail="JSON inválido.") from error
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Payload do webhook precisa ser JSON object.")
 
     if not _cakto_secret_is_valid(request, payload):
         _log_cakto_webhook_payload(payload, {"action": "unauthorized"})
-        raise HTTPException(status_code=401, detail="Webhook Cakto nao autorizado.")
+        raise HTTPException(status_code=401, detail="Webhook Cakto não autorizado.")
 
     result = process_cakto_webhook(payload)
     _log_cakto_webhook_payload(payload, result)
@@ -596,7 +596,7 @@ async def api_section(section_name: str, limit: int = Query(12, ge=1, le=24)):
         }
         search_type = section_map.get(section_name)
         if not search_type:
-            raise HTTPException(status_code=404, detail="Secao nao encontrada.")
+            raise HTTPException(status_code=404, detail="Seção não encontrada.")
 
         extra = {"search_time": "week"} if search_type == "getRecentRead" else {}
         items = await get_title_search(search_type, limit=max(limit, 16), **extra)
