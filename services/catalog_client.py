@@ -1448,7 +1448,10 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
         }
 
     try:
-        return await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
+        result = await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
+        if isinstance(result, dict) and result.get("partial"):
+            _CACHE.pop(cache_key, None)
+        return result
     except Exception as error:
         print("[CATALOG][CHAPTERS_UNHANDLED]", title_id, repr(error))
         return {
@@ -1666,11 +1669,16 @@ async def get_title_bundle(title_ref: str, lang: str | None = None) -> dict[str,
         merged["chapters"] = chapters_payload["chapters"]
         merged["languages"] = chapters_payload["languages"]
         merged["total_chapters"] = len(chapters_payload["chapters"])
+        merged["chapters_partial"] = bool(chapters_payload.get("partial"))
+        merged["chapters_error"] = chapters_payload.get("error") or ""
         latest = flatten_chapters(chapters_payload, resolved_lang)
         merged["latest_chapter"] = latest[0] if latest else None
         return merged
 
-    return await _dedup_fetch(cache_key, BUNDLE_TTL, _load)
+    result = await _dedup_fetch(cache_key, BUNDLE_TTL, _load)
+    if isinstance(result, dict) and result.get("chapters_partial"):
+        _CACHE.pop(cache_key, None)
+    return result
 
 
 async def get_title_overview(title_ref: str) -> dict[str, Any]:
@@ -1708,6 +1716,9 @@ def get_cached_title_bundle(title_ref: str, lang: str | None = None) -> dict[str
     cache_key = f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
     cached = _cache_get(cache_key, BUNDLE_TTL)
     if cached is None:
+        return None
+    if isinstance(cached, dict) and cached.get("chapters_partial"):
+        _CACHE.pop(cache_key, None)
         return None
     return dict(cached)
 
