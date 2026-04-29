@@ -189,7 +189,6 @@ async def _load_title_panel_bundle(title_id: str) -> dict:
         return cached
 
     summary = get_cached_title_summary(title_id)
-    prefetch_title_bundles([title_id], limit=1)
     return _fallback_title_bundle(title_id, summary=summary)
 
 
@@ -264,11 +263,14 @@ def _miniapp_url(
 
 def _title_text(bundle: dict, last_read: dict | None = None) -> str:
     title = html.escape(bundle.get("title") or "Manga")
-    status = html.escape(bundle.get("status") or bundle.get("anilist_status") or "N/A")
-    chapters = html.escape(str(bundle.get("total_chapters") or bundle.get("anilist_chapters") or "?"))
+    is_partial = bool(bundle.get("chapters_partial"))
+    raw_status = bundle.get("status") or bundle.get("anilist_status") or ""
+    raw_chapters = bundle.get("total_chapters") or bundle.get("anilist_chapters") or ""
+    status = html.escape(raw_status or ("carregando" if is_partial else "N/A"))
+    chapters = html.escape(str(raw_chapters or ("carregando" if is_partial else "?")))
     score = _display_score(bundle)
     genres = bundle.get("genres") or []
-    genres_text = html.escape(", ".join(str(item) for item in genres[:4])) if genres else "N/A"
+    genres_text = html.escape(", ".join(str(item) for item in genres[:4])) if genres else ("carregando" if is_partial else "N/A")
 
     meta = [
         f"» <b>Status:</b> <i>{status}</i>",
@@ -280,13 +282,13 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
         meta.append(f"» <b>Continuar de:</b> <i>Capítulo {html.escape(last_read['chapter_number'])}</i>")
 
     footer = "✨ <i>Escolha abaixo como quer continuar.</i>"
-    if bundle.get("chapters_partial"):
-        footer = "⏳ <i>Abri a obra. A lista completa ainda está carregando.</i>"
+    if is_partial:
+        footer = "⏳ <i>Abri a obra. Vou atualizar este card em instantes.</i>"
 
     return (
         f"📚 <b>{title}</b>\n\n"
         f"{chr(10).join(meta)}\n"
-        f"» <b>Generos:</b> <i>{genres_text}</i>\n\n"
+        f"» <b>Gêneros:</b> <i>{genres_text}</i>\n\n"
         f"{footer}"
     )
 
@@ -769,17 +771,64 @@ async def _auto_finalize_telegraph_panel(
         )
 
 
+async def _auto_finalize_title_panel(
+    context: ContextTypes.DEFAULT_TYPE,
+    panel_message,
+    title_id: str,
+    user_id: int | None,
+    title_task: asyncio.Task,
+) -> None:
+    if not panel_message:
+        return
+
+    try:
+        bundle = await title_task
+    except Exception as error:
+        print("[TITLE_PANEL][REFRESH_FAIL]", title_id, repr(error))
+        return
+
+    if not isinstance(bundle, dict):
+        return
+
+    chat_id = getattr(getattr(panel_message, "chat", None), "id", None)
+    message_id = getattr(panel_message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return
+
+    async with _message_lock(chat_id, message_id):
+        kind, ref = _get_panel_state(chat_id, message_id)
+        bundle_title_id = str(bundle.get("title_id") or title_id).strip()
+        if kind != "title" or ref != bundle_title_id:
+            return
+
+        last_read = await run_sync(get_last_read_entry, user_id, bundle_title_id) if user_id else None
+        chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+        latest = bundle.get("latest_chapter") or {}
+        chapter_ids = [latest.get("chapter_id") or ""]
+        chapter_ids.extend(item.get("chapter_id") or "" for item in chapters[:3])
+        prefetch_reader_payloads(chapter_ids, limit=4)
+
+        await _render_panel_to_message(
+            context,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=_title_text(bundle, last_read),
+            keyboard=_title_keyboard(bundle, last_read, user_id),
+            photo=_pick_bundle_image(bundle),
+        )
+
+
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     bundle = await _load_title_panel_bundle(title_id)
 
-    fire_and_forget(get_title_bundle(title_id))
+    refresh_task = None
+    if bundle.get("chapters_partial") or not bundle.get("chapters"):
+        refresh_task = fire_and_forget(get_title_bundle(title_id))
 
     last_read = await run_sync(get_last_read_entry, user_id, bundle["title_id"]) if user_id else None
 
     chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
-    if not bundle.get("chapters"):
-        prefetch_title_bundles([title_id], limit=1)
-    else:
+    if bundle.get("chapters"):
         latest = bundle.get("latest_chapter") or {}
         chapter_ids = [latest.get("chapter_id") or ""]
         chapter_ids.extend(item.get("chapter_id") or "" for item in chapters[:3])
@@ -803,6 +852,8 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
     )
     if panel_message:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "title", bundle["title_id"])
+        if refresh_task is not None:
+            fire_and_forget(_auto_finalize_title_panel(context, panel_message, bundle["title_id"], user_id, refresh_task))
 
 
 async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
