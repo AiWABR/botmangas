@@ -1161,9 +1161,18 @@ function applyServerProgress(items = []) {
 async function syncProgressWithServer() {
   if (!state.userId) return;
   try {
-    const response = await api(`/api/history?user_id=${encodeURIComponent(state.userId)}&limit=120`);
+    const response = await api("/api/progress/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: state.userId, progress: Object.values(state.localProgress || {}) }),
+    });
     applyServerProgress(response.items || []);
-  } catch (_) {}
+  } catch (_) {
+    try {
+      const response = await api(`/api/history?user_id=${encodeURIComponent(state.userId)}&limit=120`);
+      applyServerProgress(response.items || []);
+    } catch (_) {}
+  }
 }
 
 async function syncUserDataWithServer() {
@@ -2049,7 +2058,7 @@ async function persistProgress(payload) {
     await api("/api/progress", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: state.userId, title_id: payload.title_id, title_name: payload.title_name || "", chapter_id: payload.chapter_id || "", chapter_number: payload.chapter_number || "", chapter_url: "", page_index: Number(payload.page_index || 0), total_pages: Number(payload.total_pages || 0) }),
+      body: JSON.stringify({ user_id: state.userId, title_id: payload.title_id, title_name: payload.title_name || "", chapter_id: payload.chapter_id || "", chapter_number: payload.chapter_number || "", chapter_url: "", page_index: Number(payload.page_index || 0), total_pages: Number(payload.total_pages || 0), cover_url: payload.cover_url || "", updated_at: Date.now() }),
     });
   } catch (_) {}
 }
