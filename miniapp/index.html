@@ -1084,6 +1084,54 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+function applyServerFavorites(items = []) {
+  let changed = false;
+  items.forEach(item => {
+    const titleId = item?.title_id || "";
+    if (!titleId) return;
+    const current = state.favorites[titleId] || null;
+    if (!current || Number(item.updated_at || item.added_at || 0) >= Number(current.updated_at || current.added_at || 0)) {
+      state.favorites[titleId] = { ...current, ...item };
+      changed = true;
+    }
+  });
+  if (changed) {
+    saveFavorites();
+    updateNavBadge();
+  }
+}
+
+async function syncFavoritesWithServer() {
+  if (!state.userId) return;
+  try {
+    const response = await api("/api/favorites/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: state.userId, favorites: getFavList() }),
+    });
+    applyServerFavorites(response.items || []);
+  } catch (_) {}
+}
+
+async function syncFavoriteWithServer(titleId, favorite, meta = {}) {
+  if (!state.userId || !titleId) return;
+  try {
+    const stored = state.favorites[titleId] || {};
+    const response = await api("/api/favorites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: state.userId,
+        title_id: titleId,
+        ...stored,
+        ...meta,
+        favorite,
+      }),
+    });
+    if (favorite) applyServerFavorites(response.items || []);
+  } catch (_) {}
+}
+
 // ══════════════════════════════════════════
 //  URL / ROUTING
 // ══════════════════════════════════════════
@@ -1236,6 +1284,7 @@ function updateFavBtn(titleId) {
 
 function handleFavClick(titleId, meta = {}, btnEl = null) {
   const added = toggleFav(titleId, meta);
+  syncFavoriteWithServer(titleId, added, meta).catch(() => {});
   if (btnEl) {
     btnEl.classList.add("fav-popping");
     setTimeout(() => btnEl.classList.remove("fav-popping"), 400);
@@ -1286,6 +1335,7 @@ function buildCard(item, { showReadBar = false } = {}) {
     handleFavClick(titleId, {
       title: title, display_title: title, cover_url: cover,
       background_url: cover, latest_chapter: item.latest_chapter,
+      latest_chapter_id: item.chapter_id || item.latest_chapter_id || "",
       status: item.status, anilist_score: item.anilist_score || item.rating,
     }, e.currentTarget);
   });
@@ -1683,7 +1733,16 @@ function renderDetail(bundle, opts = {}) {
   const description = stripHtml(bundle?.description || bundle?.anilist_description || "Sem descrição disponível.");
   const cover = bundle?.cover_url || "";
   const bg = bundle?.background_url || bundle?.banner_url || cover || "";
-  const favMeta = { title: bundle.title, cover_url: cover, status: bundle.status || bundle.anilist_status };
+  const favMeta = {
+    title: bundle.title,
+    display_title: bundle.title,
+    cover_url: cover,
+    background_url: bg,
+    latest_chapter: bundle?.latest_chapter?.chapter_number || chapters[0]?.chapter_number || "",
+    latest_chapter_id: latestChapter,
+    status: bundle.status || bundle.anilist_status,
+    anilist_score: bundle.anilist_score || bundle.rating || "",
+  };
 
   state.currentTitleBundle = bundle;
   state.currentTitleId = bundle.title_id || "";
@@ -2040,6 +2099,7 @@ window.addEventListener("popstate", async () => {
 });
 
 async function boot() {
+  await syncFavoritesWithServer();
   const b = getBootParams();
   if (b.route === "lib") { await loadHome(); openLibPage(); return; }
   if (b.route === "updates") { await loadHome(); openUpdatesPage(); return; }
