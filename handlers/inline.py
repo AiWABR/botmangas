@@ -13,11 +13,15 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from config import BOT_BRAND, BOT_USERNAME
-from services.catalog_client import get_cached_search_titles, search_titles
+from services.catalog_client import (
+    get_cached_search_titles,
+    get_search_fallback_titles,
+    search_titles_fast,
+)
 
 INLINE_LIMIT = 8
 INLINE_QUERY_TTL = 90
-INLINE_SEARCH_TIMEOUT = 4.2
+INLINE_SEARCH_TIMEOUT = 4.8
 INLINE_ANSWER_CACHE = 6
 
 INLINE_CACHE: dict[str, tuple[float, list[dict]]] = {}
@@ -65,6 +69,14 @@ def _cache_set(query: str, results: list[dict]) -> list[dict]:
     return results
 
 
+def _fallback_search(query: str) -> list[dict]:
+    try:
+        return get_search_fallback_titles(query, limit=INLINE_LIMIT)
+    except Exception as error:
+        print("[INLINE][FALLBACK]", query, repr(error))
+        return []
+
+
 async def _search_inline(query: str) -> list[dict]:
     normalized = _normalize_query(query)
     if not normalized:
@@ -78,13 +90,26 @@ async def _search_inline(query: str) -> list[dict]:
     if cached_catalog is not None:
         return _cache_set(normalized, cached_catalog[:INLINE_LIMIT])
 
+    fallback_catalog = _fallback_search(normalized)
+    if fallback_catalog:
+        return _cache_set(normalized, fallback_catalog[:INLINE_LIMIT])
+
     task = _INLINE_INFLIGHT.get(normalized.lower())
     if task:
         return await task
 
     async def _runner() -> list[dict]:
-        results = await asyncio.wait_for(search_titles(normalized, limit=INLINE_LIMIT), timeout=INLINE_SEARCH_TIMEOUT)
-        return _cache_set(normalized, results)
+        try:
+            results = await asyncio.wait_for(
+                search_titles_fast(normalized, limit=INLINE_LIMIT),
+                timeout=INLINE_SEARCH_TIMEOUT,
+            )
+        except Exception as error:
+            print("[INLINE][SEARCH]", normalized, repr(error))
+            fallback_results = _fallback_search(normalized)
+            return _cache_set(normalized, fallback_results[:INLINE_LIMIT])
+
+        return _cache_set(normalized, results[:INLINE_LIMIT])
 
     task = asyncio.create_task(_runner())
     _INLINE_INFLIGHT[normalized.lower()] = task
@@ -111,6 +136,13 @@ def _deep_link(payload: str) -> str:
     if not username:
         return ""
     return f"https://t.me/{username}?start={payload}"
+
+
+def _bot_url() -> str:
+    username = (BOT_USERNAME or "").strip().lstrip("@")
+    if not username:
+        return "https://t.me/"
+    return f"https://t.me/{username}"
 
 
 def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
@@ -169,6 +201,36 @@ def _build_message_text(item: dict) -> str:
     return text
 
 
+def _helper_article(query_text: str, *, kind: str) -> InlineQueryResultArticle:
+    escaped_query = html.escape(query_text or "")
+
+    if kind == "short":
+        title = "Digite o nome do mangá"
+        description = "Use pelo menos 2 letras para buscar no acervo."
+        message = (
+            "🔎 <b>Busca de mangás</b>\n\n"
+            "Digite o nome da obra depois do usuário do bot para procurar no acervo."
+        )
+    else:
+        title = "Nenhum mangá encontrado"
+        description = "Abra o bot ou tente outro nome para buscar no acervo."
+        message = (
+            f"🔎 <b>Nenhum resultado encontrado</b>\n\n"
+            f"» <b>Busca:</b> <i>{escaped_query or 'sem texto'}</i>\n\n"
+            "Tente pesquisar por outro nome da obra."
+        )
+
+    return InlineQueryResultArticle(
+        id=_result_id(f"{kind}:{query_text}", 0),
+        title=title,
+        description=description,
+        input_message_content=InputTextMessageContent(message, parse_mode="HTML"),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔎 Abrir bot", url=_bot_url())]]
+        ),
+    )
+
+
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     if not query:
@@ -176,17 +238,18 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = _normalize_query(query.query or "")
     if len(text) < 2:
-        await query.answer([], cache_time=2, is_personal=True)
+        await query.answer([_helper_article(text, kind="short")], cache_time=2, is_personal=True)
         return
 
     try:
         results = await _search_inline(text)
-    except Exception:
-        await query.answer([], cache_time=2, is_personal=True)
+    except Exception as error:
+        print("[INLINE][UNHANDLED]", text, repr(error))
+        await query.answer([_helper_article(text, kind="empty")], cache_time=2, is_personal=True)
         return
 
     if not results:
-        await query.answer([], cache_time=4, is_personal=True)
+        await query.answer([_helper_article(text, kind="empty")], cache_time=4, is_personal=True)
         return
 
     articles = []
@@ -207,4 +270,10 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         )
 
-    await query.answer(articles, cache_time=INLINE_ANSWER_CACHE, is_personal=True)
+    if not articles:
+        articles = [_helper_article(text, kind="empty")]
+
+    try:
+        await query.answer(articles, cache_time=INLINE_ANSWER_CACHE, is_personal=True)
+    except Exception as error:
+        print("[INLINE][ANSWER]", text, len(articles), repr(error))
