@@ -39,6 +39,7 @@ from services.telegraph_service import get_cached_chapter_page_url, get_or_creat
 
 CALLBACK_COOLDOWN = 0.8
 TELEGRAPH_INLINE_WAIT = 1.15
+SUPPORT_BOT_URL = "https://t.me/QGSuporteBot"
 
 _USER_CALLBACK_LOCKS: dict[int, asyncio.Lock] = {}
 _MESSAGE_EDIT_LOCKS: dict[str, asyncio.Lock] = {}
@@ -216,12 +217,12 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
 
     meta = [
         f"» <b>Status:</b> <i>{status}</i>",
-        f"» <b>Capitulos:</b> <i>{chapters}</i>",
+        f"» <b>Capítulos:</b> <i>{chapters}</i>",
     ]
     if score:
         meta.append(f"» <b>Nota:</b> <i>{html.escape(score)}</i>")
     if last_read and last_read.get("chapter_number"):
-        meta.append(f"» <b>Continuar de:</b> <i>Capitulo {html.escape(last_read['chapter_number'])}</i>")
+        meta.append(f"» <b>Continuar de:</b> <i>Capítulo {html.escape(last_read['chapter_number'])}</i>")
 
     return (
         f"📚 <b>{title}</b>\n\n"
@@ -255,7 +256,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
     if latest_chapter.get("chapter_id"):
         primary_row.append(
             InlineKeyboardButton(
-                "🆕 Ultimo capitulo",
+                "🆕 Último capítulo",
                 web_app=WebAppInfo(
                     url=_miniapp_url(
                         title_id=title_id,
@@ -272,7 +273,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
     rows.append(
         [
             InlineKeyboardButton(
-                "📚 Lista de capitulos",
+                "📚 Lista de capítulos",
                 web_app=WebAppInfo(
                     url=_miniapp_url(
                         title_id=title_id,
@@ -299,7 +300,7 @@ def _offline_text(bundle: dict) -> str:
     return (
         f"📥 <b>Ler offline</b>\n\n"
         f"» <b>Obra:</b> <i>{title}</i>\n"
-        f"» <b>Capitulos:</b> <i>{chapters}</i>\n\n"
+        f"» <b>Capítulos:</b> <i>{chapters}</i>\n\n"
         "✨ <i>Escolha como quer receber os PDFs.</i>"
     )
 
@@ -308,8 +309,8 @@ def _offline_keyboard(bundle: dict) -> InlineKeyboardMarkup:
     title_id = str(bundle.get("title_id") or "").strip()
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📥 Primeiro ao ultimo", callback_data=f"mb|pdfall|{title_id}|asc")],
-            [InlineKeyboardButton("📥 Ultimo ao primeiro", callback_data=f"mb|pdfall|{title_id}|desc")],
+            [InlineKeyboardButton("📥 Primeiro ao último", callback_data=f"mb|pdfall|{title_id}|asc")],
+            [InlineKeyboardButton("📥 Último ao primeiro", callback_data=f"mb|pdfall|{title_id}|desc")],
             [InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")],
         ]
     )
@@ -342,19 +343,26 @@ def _offline_locked_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboar
     if options:
         rows = [[InlineKeyboardButton(option["label"], url=option["url"])] for option in options]
         if title_id:
-            rows.append([InlineKeyboardButton("🔄 Ja paguei / verificar", callback_data=f"mb|paycheck|{title_id}")])
+            rows.append([InlineKeyboardButton("🔄 Já paguei / verificar", callback_data=f"mb|paycheck|{title_id}")])
+        rows.append([InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)])
         return InlineKeyboardMarkup(rows)
 
     subscribe_url = _normalize_url(PDF_BULK_SUBSCRIBE_URL)
     if not subscribe_url:
         if title_id:
             return InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔄 Ja paguei / verificar", callback_data=f"mb|paycheck|{title_id}")]]
+                [
+                    [InlineKeyboardButton("🔄 Já paguei / verificar", callback_data=f"mb|paycheck|{title_id}")],
+                    [InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)],
+                ]
             )
         return None
     brand = BOT_BRAND or "Mangas Baltigo"
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(f"✨ Assinar {brand}", url=subscribe_url)]]
+        [
+            [InlineKeyboardButton(f"✨ Assinar {brand}", url=subscribe_url)],
+            [InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)],
+        ]
     )
 
 
@@ -390,10 +398,10 @@ def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
     total_pages = max(1, ((total_items - 1) // CHAPTERS_PER_PAGE) + 1)
     return (
         f"📖 <b>{html.escape(bundle.get('title') or 'Manga')}</b>\n\n"
-        f"» <b>Pagina:</b> <i>{page}/{total_pages}</i>\n"
-        f"» <b>Capitulos disponiveis:</b> <i>{total_items}</i>\n\n"
-        "Toque em um capitulo abaixo.\n"
-        "✅ = capitulo ja lido"
+        f"» <b>Página:</b> <i>{page}/{total_pages}</i>\n"
+        f"» <b>Capítulos disponíveis:</b> <i>{total_items}</i>\n\n"
+        "Toque em um capítulo abaixo.\n"
+        "✅ = capítulo já lido"
     )
 
 
@@ -463,10 +471,10 @@ def _chapter_text(chapter: dict) -> str:
 
     return (
         f"📖 <b>{title}</b>\n\n"
-        f"» <b>Capitulo:</b> <i>{chapter_number}</i>\n"
+        f"» <b>Capítulo:</b> <i>{chapter_number}</i>\n"
         f"» <b>Idioma:</b> <i>{lang}</i>\n"
-        f"» <b>Paginas:</b> <i>{image_count}</i>\n\n"
-        "✨ <i>Escolha abaixo se quer leitura rapida ou PDF.</i>"
+        f"» <b>Páginas:</b> <i>{image_count}</i>\n\n"
+        "✨ <i>Escolha abaixo se quer leitura rápida ou PDF.</i>"
     )
 
 
@@ -476,7 +484,7 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
     rows.append(
         [
             InlineKeyboardButton(
-                "📰 Abrir leitura rapida" if telegraph_url else ("⏳ Preparando leitura rapida" if telegraph_pending else "📰 Leitura rapida"),
+                "📰 Abrir leitura rápida" if telegraph_url else ("⏳ Preparando leitura rápida" if telegraph_pending else "📰 Leitura rápida"),
                 web_app=WebAppInfo(
                     url=_miniapp_url(
                         title_id=chapter["title_id"],
@@ -506,7 +514,7 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
     if chapter.get("next_chapter"):
         nav.append(
             InlineKeyboardButton(
-                "Proximo ➡️",
+                "Próximo ➡️",
                 web_app=WebAppInfo(
                     url=_miniapp_url(
                         title_id=chapter["title_id"],
@@ -522,7 +530,7 @@ def _chapter_keyboard(chapter: dict, telegraph_url: str = "", *, telegraph_pendi
     rows.append(
         [
             InlineKeyboardButton(
-                "📚 Ver capitulos",
+                "📚 Ver capítulos",
                 web_app=WebAppInfo(
                     url=_miniapp_url(title_id=chapter["title_id"], page="chapters", route="chapters")
                 ),
@@ -546,9 +554,18 @@ def _loading_keyboard(label: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data="mb|noop")]])
 
 
-async def _show_loading_markup(query, label: str) -> None:
+def _payment_check_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⏳ Verificando pagamento", callback_data="mb|noop")],
+            [InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)],
+        ]
+    )
+
+
+async def _show_loading_markup(query, label: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     try:
-        await query.edit_message_reply_markup(reply_markup=_loading_keyboard(label))
+        await query.edit_message_reply_markup(reply_markup=reply_markup or _loading_keyboard(label))
     except Exception:
         pass
 
@@ -646,7 +663,7 @@ async def _render_panel_to_message(
 
 
 def _chapter_telegraph_title(chapter: dict) -> str:
-    return f"{chapter.get('title') or 'Manga'} - Capitulo {chapter.get('chapter_number') or '?'}"
+    return f"{chapter.get('title') or 'Manga'} - Capítulo {chapter.get('chapter_number') or '?'}"
 
 
 async def _auto_finalize_telegraph_panel(
@@ -748,11 +765,13 @@ async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYP
         try:
             await (message.reply_text if message else target.reply_text)(
                 (
-                    "⚠️ <b>Nao consegui verificar pela API da Cakto.</b>\n\n"
+                    "⚠️ <b>Não consegui verificar pela API da Cakto.</b>\n\n"
                     "O bot ainda precisa de <code>CAKTO_CLIENT_ID</code> e "
-                    "<code>CAKTO_CLIENT_SECRET</code> no ambiente para consultar pedidos."
+                    "<code>CAKTO_CLIENT_SECRET</code> no ambiente para consultar pedidos.\n\n"
+                    "Se você já pagou, chame o suporte para a liberação manual."
                 ),
                 parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)]]),
             )
         except Exception:
             pass
@@ -769,17 +788,19 @@ async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYP
 
     reason = result.get("reason") or "not_found"
     if reason == "not_found":
-        text = "Ainda nao achei uma compra aprovada vinculada ao seu Telegram."
+        text = "Ainda não encontrei uma compra aprovada vinculada ao seu Telegram."
     elif reason == "order_not_paid":
-        text = "Achei seu pedido, mas ele ainda nao aparece como pago na Cakto."
+        text = "Encontrei seu pedido, mas ele ainda não aparece como pago na Cakto."
     else:
-        text = "Nao consegui confirmar o pagamento agora."
+        text = "Não consegui confirmar o pagamento agora."
 
     message = getattr(target, "message", None)
     try:
         await (message.reply_text if message else target.reply_text)(
-            f"⏳ <b>Pagamento ainda nao confirmado</b>\n\n{text}",
+            f"⏳ <b>Pagamento ainda não confirmado</b>\n\n{text}\n\n"
+            "Se o Pix já saiu da sua conta, fale com o suporte para conferirmos manualmente.",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛟 Suporte", url=SUPPORT_BOT_URL)]]),
         )
     except Exception:
         pass
@@ -906,7 +927,7 @@ async def _enqueue_pdf(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: st
             images=chapter.get("images") or [],
             caption=(
                 f"📄 <b>{html.escape(chapter.get('title') or 'Manga')}</b>\n"
-                f"Capitulo <code>{html.escape(chapter.get('chapter_number') or '?')}</code>\n"
+                f"Capítulo <code>{html.escape(chapter.get('chapter_number') or '?')}</code>\n"
                 "@MangasBrasil"
             ),
         ),
@@ -928,7 +949,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not user:
-        await _safe_answer_query(query, "Nao consegui identificar seu usuario agora.", show_alert=True)
+        await _safe_answer_query(query, "Não consegui identificar seu usuário agora.", show_alert=True)
         return
 
     if _is_callback_cooldown(context, user.id, query.data):
@@ -941,7 +962,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     current_action = _action_signature(query.data)
     if message and _get_inflight_action(message.chat.id, message.message_id) == current_action:
-        await _safe_answer_query(query, "⏳ Essa acao ja esta sendo processada.", show_alert=False)
+        await _safe_answer_query(query, "⏳ Essa ação já está sendo processada.", show_alert=False)
         return
 
     parts = query.data.split("|")
@@ -953,7 +974,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async with msg_lock:
             if message:
                 if _get_inflight_action(message.chat.id, message.message_id) == current_action:
-                    await _safe_answer_query(query, "⏳ Essa acao ja esta sendo processada.", show_alert=False)
+                    await _safe_answer_query(query, "⏳ Essa ação já está sendo processada.", show_alert=False)
                     return
                 _set_inflight_action(message.chat.id, message.message_id, current_action)
 
@@ -963,7 +984,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if stopped:
                         await _safe_answer_query(query, "Parando o download offline.", show_alert=False)
                     else:
-                        await _safe_answer_query(query, "Esse lote ja terminou ou expirou.", show_alert=True)
+                        await _safe_answer_query(query, "Esse lote já terminou ou expirou.", show_alert=True)
                     return
 
                 if action == "title" and len(parts) >= 3:
@@ -975,31 +996,31 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if action == "offline" and len(parts) >= 3:
                     await _safe_answer_query(query)
                     if can_use_pdf_bulk(user_id):
-                        await _show_loading_markup(query, "Carregando offline")
+                        await _show_loading_markup(query, "⏳ Carregando offline")
                     await send_offline_panel(query, context, parts[2], user_id, edit=True)
                     return
 
                 if action == "paycheck" and len(parts) >= 3:
                     await _safe_answer_query(query, "Verificando pagamento na Cakto...", show_alert=False)
-                    await _show_loading_markup(query, "Verificando pagamento")
+                    await _show_loading_markup(query, "⏳ Verificando pagamento", reply_markup=_payment_check_keyboard())
                     await verify_offline_payment_panel(query, context, parts[2], user_id)
                     return
 
                 if action == "chap" and len(parts) >= 4:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Carregando capitulos")
+                    await _show_loading_markup(query, "⏳ Carregando capítulos")
                     await send_chapters_page(query, context, parts[2], int(parts[3]), user_id, edit=True)
                     return
 
                 if action == "read" and len(parts) >= 3:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Abrindo capitulo")
+                    await _show_loading_markup(query, "⏳ Abrindo capítulo")
                     await send_chapter_panel(query, context, parts[2], user_id, edit=True)
                     return
 
                 if action == "sp" and len(parts) >= 4:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Carregando pagina")
+                    await _show_loading_markup(query, "⏳ Carregando página")
                     rendered = render_search_page(context, parts[2], int(parts[3]))
                     if not rendered:
                         await _safe_answer_query(query, "Essa busca expirou. Faz outra busca pra continuar.", show_alert=True)
@@ -1009,13 +1030,13 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if action == "tg" and len(parts) >= 3:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Preparando leitura rapida")
+                    await _show_loading_markup(query, "⏳ Preparando leitura rápida")
                     await _send_telegraph(query, parts[2])
                     return
 
                 if action == "pdfall" and len(parts) >= 3:
                     if not can_use_pdf_bulk(user_id):
-                        await _safe_answer_query(query, "Funcao liberada so para membros autorizados.", show_alert=True)
+                        await _safe_answer_query(query, "Função liberada só para assinantes.", show_alert=True)
                         return
                     await _safe_answer_query(query, "Pedido recebido. Vou preparar os PDFs.", show_alert=False)
                     await request_pdf_bulk_for_title(
@@ -1044,13 +1065,13 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
 
-                await _safe_answer_query(query, "Acao invalida ou expirada.", show_alert=False)
+                await _safe_answer_query(query, "Ação inválida ou expirada.", show_alert=False)
 
             except ValueError:
-                await _safe_answer_query(query, "Dados invalidos nessa acao.", show_alert=True)
+                await _safe_answer_query(query, "Dados inválidos nessa ação.", show_alert=True)
                 await _restore_reply_markup(query, original_reply_markup)
             except Exception:
-                await _safe_answer_query(query, "Ocorreu um erro ao processar essa acao.", show_alert=True)
+                await _safe_answer_query(query, "Ocorreu um erro ao processar essa ação.", show_alert=True)
                 await _restore_reply_markup(query, original_reply_markup)
             finally:
                 if message:
