@@ -45,6 +45,7 @@ from config import (
     API_CACHE_TTL_SECONDS,
     AUTO_POST_LIMIT,
     CATALOG_SITE_BASE,
+    DATA_DIR,
     HOME_SECTION_LIMIT,
     PREFERRED_CHAPTER_LANG,
     RECENT_CHAPTER_TIME,
@@ -62,6 +63,8 @@ _CACHE: dict[str, dict[str, Any]] = {}
 _INFLIGHT: dict[str, asyncio.Task] = {}
 _TITLE_URL_CACHE: dict[str, str] = {}
 _TITLE_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
+_TITLE_SUMMARY_CACHE_LOADED = False
+_TITLE_SUMMARY_CACHE_SAVED_AT = 0.0
 _CHAPTER_URL_CACHE: dict[str, str] = {}
 _CHAPTER_TITLE_CACHE: dict[str, str] = {}
 _CSRF_TOKEN: dict[str, Any] = {"value": "", "expires_at": 0.0}
@@ -87,6 +90,8 @@ CHAPTERS_TTL = max(API_CACHE_TTL_SECONDS, 900)
 CHAPTER_TTL = max(API_CACHE_TTL_SECONDS, 1800)
 BUNDLE_TTL = max(API_CACHE_TTL_SECONDS, 1800)
 READER_TTL = max(API_CACHE_TTL_SECONDS, 900)
+TITLE_SUMMARY_CACHE_PATH = Path(DATA_DIR) / "title_summary_cache.json"
+TITLE_SUMMARY_CACHE_LIMIT = 2500
 
 KNOWN_STATUSES = {
     "ongoing",
@@ -173,10 +178,13 @@ def _playwright_launch_kwargs() -> dict[str, Any]:
 
 
 def clear_catalog_cache() -> None:
+    global _TITLE_SUMMARY_CACHE_LOADED, _TITLE_SUMMARY_CACHE_SAVED_AT
     _CACHE.clear()
     _INFLIGHT.clear()
     _TITLE_URL_CACHE.clear()
     _TITLE_SUMMARY_CACHE.clear()
+    _TITLE_SUMMARY_CACHE_LOADED = False
+    _TITLE_SUMMARY_CACHE_SAVED_AT = 0.0
     _CHAPTER_URL_CACHE.clear()
     _CHAPTER_TITLE_CACHE.clear()
     _CSRF_TOKEN["value"] = ""
@@ -527,7 +535,54 @@ def _remember_title_url(title_id: str, url: str) -> None:
         _TITLE_URL_CACHE[title_id] = url
 
 
+def _load_title_summary_cache_once() -> None:
+    global _TITLE_SUMMARY_CACHE_LOADED
+    if _TITLE_SUMMARY_CACHE_LOADED:
+        return
+    _TITLE_SUMMARY_CACHE_LOADED = True
+
+    try:
+        raw = json.loads(TITLE_SUMMARY_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    if not isinstance(raw, dict):
+        return
+
+    for title_id, item in raw.items():
+        if not isinstance(item, dict):
+            continue
+        clean_id = _extract_title_id(title_id) or _extract_title_id(item.get("title_id")) or _clean(title_id)
+        if clean_id:
+            cached_item = dict(item)
+            cached_item["title_id"] = clean_id
+            _TITLE_SUMMARY_CACHE[clean_id] = cached_item
+
+
+def _persist_title_summary_cache(*, force: bool = False) -> None:
+    global _TITLE_SUMMARY_CACHE_SAVED_AT
+    now = time.time()
+    if not force and now - _TITLE_SUMMARY_CACHE_SAVED_AT < 2.0:
+        return
+
+    _TITLE_SUMMARY_CACHE_SAVED_AT = now
+    try:
+        TITLE_SUMMARY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        items = sorted(
+            _TITLE_SUMMARY_CACHE.items(),
+            key=lambda pair: str(pair[1].get("cached_at") or pair[1].get("updated_at") or ""),
+            reverse=True,
+        )[:TITLE_SUMMARY_CACHE_LIMIT]
+        data = {title_id: item for title_id, item in items}
+        tmp_path = TITLE_SUMMARY_CACHE_PATH.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(TITLE_SUMMARY_CACHE_PATH)
+    except Exception:
+        pass
+
+
 def _remember_title_summary(item: dict[str, Any]) -> None:
+    _load_title_summary_cache_once()
     title_id = _extract_title_id(item.get("title_id")) or _clean(item.get("title_id"))
     if not title_id:
         return
@@ -555,15 +610,34 @@ def _remember_title_summary(item: dict[str, Any]) -> None:
             merged[key] = value
 
     merged["title_id"] = title_id
-    _TITLE_SUMMARY_CACHE[title_id] = merged
+    merged["cached_at"] = str(int(time.time()))
+    if merged != current:
+        _TITLE_SUMMARY_CACHE[title_id] = merged
+        _persist_title_summary_cache()
 
 
 def get_cached_title_summary(title_id: str) -> dict[str, Any] | None:
+    _load_title_summary_cache_once()
     title_id = _extract_title_id(title_id) or _clean(title_id)
     if not title_id:
         return None
     cached = _TITLE_SUMMARY_CACHE.get(title_id)
-    return dict(cached) if cached else None
+    if cached:
+        return dict(cached)
+
+    for item in _iter_local_search_seed_candidates(limit=800):
+        candidate_id = _extract_title_id(item.get("title_id") or item.get("url") or "")
+        title = _clean_catalog_title(item.get("display_title") or item.get("title") or "")
+        if candidate_id == title_id and title:
+            summary = {
+                "title_id": title_id,
+                "title": title,
+                "display_title": item.get("display_title") or title,
+            }
+            _remember_title_summary(summary)
+            return dict(_TITLE_SUMMARY_CACHE.get(title_id) or summary)
+
+    return None
 
 
 def _remember_chapter_url(chapter_id: str, url: str) -> None:
