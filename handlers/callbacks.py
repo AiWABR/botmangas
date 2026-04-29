@@ -39,6 +39,8 @@ from services.telegraph_service import get_cached_chapter_page_url, get_or_creat
 
 CALLBACK_COOLDOWN = 0.8
 TELEGRAPH_INLINE_WAIT = 1.15
+TITLE_PANEL_FAST_TIMEOUT = 8.0
+CHAPTER_PANEL_FAST_TIMEOUT = 16.0
 SUPPORT_BOT_URL = "https://t.me/QGSuporteBot"
 
 _USER_CALLBACK_LOCKS: dict[int, asyncio.Lock] = {}
@@ -138,6 +140,35 @@ def _pick_bundle_image(bundle: dict) -> str:
     ).strip()
 
 
+def _fallback_title_bundle(title_id: str, *, title: str = "Manga") -> dict:
+    title_id = str(title_id or "").strip()
+    return {
+        "title_id": title_id,
+        "title": title or "Manga",
+        "display_title": title or "Manga",
+        "status": "carregando",
+        "chapters": [],
+        "languages": [],
+        "total_chapters": 0,
+        "latest_chapter": None,
+        "genres": [],
+        "chapters_partial": True,
+    }
+
+
+async def _load_title_panel_bundle(title_id: str) -> dict:
+    cached = get_cached_title_bundle(title_id) or get_cached_title_overview(title_id)
+    if cached is not None:
+        return cached
+
+    try:
+        return await asyncio.wait_for(get_title_overview(title_id), timeout=TITLE_PANEL_FAST_TIMEOUT)
+    except Exception as error:
+        print("[TITLE_PANEL][FAST_FALLBACK]", title_id, repr(error))
+        prefetch_title_bundles([title_id], limit=1)
+        return _fallback_title_bundle(title_id)
+
+
 def _pick_chapter_image(chapter: dict) -> str:
     return (
         chapter.get("cover_url")
@@ -224,11 +255,15 @@ def _title_text(bundle: dict, last_read: dict | None = None) -> str:
     if last_read and last_read.get("chapter_number"):
         meta.append(f"» <b>Continuar de:</b> <i>Capítulo {html.escape(last_read['chapter_number'])}</i>")
 
+    footer = "✨ <i>Escolha abaixo como quer continuar.</i>"
+    if bundle.get("chapters_partial"):
+        footer = "⏳ <i>Abri a obra. A lista completa ainda está carregando.</i>"
+
     return (
         f"📚 <b>{title}</b>\n\n"
         f"{chr(10).join(meta)}\n"
         f"» <b>Generos:</b> <i>{genres_text}</i>\n\n"
-        "✨ <i>Escolha abaixo como quer continuar.</i>"
+        f"{footer}"
     )
 
 
@@ -396,6 +431,13 @@ async def _send_offline_locked(target, bundle: dict, user_id: int | None) -> Non
 
 def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
     total_pages = max(1, ((total_items - 1) // CHAPTERS_PER_PAGE) + 1)
+    if bundle.get("chapters_partial") and total_items <= 0:
+        return (
+            f"📖 <b>{html.escape(bundle.get('title') or 'Manga')}</b>\n\n"
+            "» <b>Status:</b> <i>carregando capítulos</i>\n\n"
+            "A fonte demorou para responder. Tente novamente em alguns segundos."
+        )
+
     return (
         f"📖 <b>{html.escape(bundle.get('title') or 'Manga')}</b>\n\n"
         f"» <b>Página:</b> <i>{page}/{total_pages}</i>\n"
@@ -437,6 +479,9 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
             line = []
     if line:
         rows.append(line)
+
+    if not chapters and bundle.get("chapters_partial"):
+        rows.append([InlineKeyboardButton("⏳ Tentar novamente", callback_data=f"mb|chap|{bundle['title_id']}|1")])
 
     rows.append([InlineKeyboardButton(f"{page}/{total_pages}", callback_data="mb|noop")])
 
@@ -701,9 +746,7 @@ async def _auto_finalize_telegraph_panel(
 
 
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
-    bundle = get_cached_title_bundle(title_id) or get_cached_title_overview(title_id)
-    if bundle is None:
-        bundle = await get_title_overview(title_id)
+    bundle = await _load_title_panel_bundle(title_id)
 
     fire_and_forget(get_title_bundle(title_id))
 
@@ -809,7 +852,12 @@ async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYP
 async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, page: int, user_id: int | None, *, edit: bool):
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
-        bundle = await get_title_bundle(title_id)
+        try:
+            bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+        except Exception as error:
+            print("[CHAPTER_PANEL][FAST_FALLBACK]", title_id, repr(error))
+            prefetch_title_bundles([title_id], limit=1)
+            bundle = _fallback_title_bundle(title_id)
 
     chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
     read_ids = set(await run_sync(get_read_chapter_ids, user_id, bundle["title_id"])) if user_id else set()
