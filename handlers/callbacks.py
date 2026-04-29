@@ -24,6 +24,7 @@ from services.catalog_client import (
     get_cached_title_summary,
     get_chapter_reader_payload,
     get_title_bundle,
+    get_title_chapters_snapshot,
     prefetch_reader_payloads,
     prefetch_title_bundles,
 )
@@ -158,6 +159,16 @@ def _summary_latest_chapter(summary: dict) -> dict | None:
 def _fallback_title_bundle(title_id: str, *, title: str = "Manga", summary: dict | None = None) -> dict:
     title_id = str(title_id or "").strip()
     summary = summary or get_cached_title_summary(title_id) or {}
+    total_chapters = 0
+    for key in ("total_chapters", "chapters_count", "chapter_count", "anilist_chapters"):
+        value = summary.get(key)
+        if value in (None, "", []):
+            continue
+        try:
+            total_chapters = max(0, int(value))
+            break
+        except (TypeError, ValueError):
+            continue
     display_title = (
         summary.get("display_title")
         or summary.get("title")
@@ -172,13 +183,13 @@ def _fallback_title_bundle(title_id: str, *, title: str = "Manga", summary: dict
         "display_title": display_title,
         "cover_url": cover_url,
         "background_url": summary.get("background_url") or cover_url,
-        "status": summary.get("status") or "carregando",
-        "rating": summary.get("rating") or "",
+        "status": summary.get("status") or summary.get("anilist_status") or "carregando",
+        "rating": summary.get("rating") or summary.get("anilist_score") or "",
         "chapters": [],
         "languages": [],
-        "total_chapters": 0,
+        "total_chapters": total_chapters,
         "latest_chapter": _summary_latest_chapter(summary),
-        "genres": [],
+        "genres": summary.get("genres") or summary.get("anilist_genres") or [],
         "chapters_partial": True,
     }
 
@@ -866,9 +877,11 @@ async def _auto_finalize_offline_panel(
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     bundle = await _load_title_panel_bundle(title_id)
 
-    refresh_task = None
+    refresh_tasks = []
     if bundle.get("chapters_partial") or not bundle.get("chapters"):
-        refresh_task = fire_and_forget(get_title_bundle(title_id))
+        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id)))
+    if bundle.get("chapters_partial") or not bundle.get("chapters") or bundle.get("metadata_partial"):
+        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id)))
 
     last_read = await run_sync(get_last_read_entry, user_id, bundle["title_id"]) if user_id else None
 
@@ -897,7 +910,7 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
     )
     if panel_message:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "title", bundle["title_id"])
-        if refresh_task is not None:
+        for refresh_task in refresh_tasks:
             fire_and_forget(_auto_finalize_title_panel(context, panel_message, bundle["title_id"], user_id, refresh_task))
 
 
@@ -910,9 +923,10 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
         await _send_offline_locked(target, bundle, user_id)
         return
 
-    refresh_task = None
+    refresh_tasks = []
     if bundle.get("chapters_partial") or not bundle.get("chapters"):
-        refresh_task = fire_and_forget(get_title_bundle(title_id))
+        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id)))
+        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id)))
 
     panel_message = await _render_panel(
         target,
@@ -923,7 +937,7 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
     )
     if panel_message:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "offline", bundle["title_id"])
-        if refresh_task is not None:
+        for refresh_task in refresh_tasks:
             fire_and_forget(_auto_finalize_offline_panel(context, panel_message, bundle["title_id"], user_id, refresh_task))
 
 
