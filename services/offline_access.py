@@ -28,11 +28,11 @@ PLAN_LABELS = {
     "bronze": "Plano Bronze (semanal)",
     "ouro": "Plano Ouro (mensal)",
     "diamante": "Plano Diamante (anual)",
-    "rubi": "Plano Rubi (vitalicio)",
-    "1m": "1 mes",
+    "rubi": "Plano Rubi (vitalício)",
+    "1m": "1 mês",
     "3m": "3 meses",
     "6m": "6 meses",
-    "lifetime": "vitalicio",
+    "lifetime": "vitalício",
 }
 
 
@@ -355,7 +355,7 @@ def grant_offline_access(
     uid = int(user_id)
     normalized_plan = normalize_plan(plan)
     if normalized_plan not in PLAN_DAYS:
-        raise ValueError("Plano offline invalido.")
+        raise ValueError("Plano offline inválido.")
 
     init_offline_access_db()
     with _get_conn() as conn:
