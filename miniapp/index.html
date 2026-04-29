@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1748,7 +1749,21 @@ function renderDetail(bundle, opts = {}) {
   const grid = $$("chapterGrid");
 
   function buildChapterButtons(list) {
-    if (!list.length) { grid.innerHTML = emptyState("Nenhum capítulo disponível."); return; }
+    if (!list.length) {
+      const partial = Boolean(bundle?.chapters_partial);
+      grid.innerHTML = `
+        ${emptyState(partial ? "A lista de capítulos demorou para carregar. Tente novamente em alguns segundos." : "Nenhum capítulo disponível.", partial ? "⏳" : "📚")}
+        ${partial ? `<button class="btn btn-primary" id="retryChaptersBtn">Tentar novamente</button>` : ""}`;
+
+      const retryBtn = $$("retryChaptersBtn");
+      if (retryBtn) {
+        retryBtn.addEventListener("click", () => {
+          state.cache.titles.delete(bundle.title_id);
+          openTitle(bundle.title_id, true, { route: "chapters", replaceHistory: true });
+        });
+      }
+      return;
+    }
     grid.innerHTML = "";
     list.forEach(ch => {
       const btn = document.createElement("button");
