@@ -106,6 +106,39 @@ def _build_description(item: dict) -> str:
     return " • ".join(parts) or "Abrir obra no bot"
 
 
+def _deep_link(payload: str) -> str:
+    username = (BOT_USERNAME or "").strip().lstrip("@")
+    if not username:
+        return ""
+    return f"https://t.me/{username}?start={payload}"
+
+
+def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
+    title_id = str(item.get("title_id") or "").strip()
+    chapter_id = str(item.get("chapter_id") or "").strip()
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if title_id:
+        rows.append(
+            [InlineKeyboardButton("📚 Abrir obra", url=_deep_link(f"title_{title_id}"))]
+        )
+        rows.append(
+            [InlineKeyboardButton("📖 Lista de capítulos", url=_deep_link(f"chapters_{title_id}"))]
+        )
+
+    if chapter_id:
+        rows.append(
+            [InlineKeyboardButton("🆕 Último capítulo", url=_deep_link(f"ch_{chapter_id}"))]
+        )
+
+    if not rows:
+        rows.append(
+            [InlineKeyboardButton("🔎 Abrir bot", url=f"https://t.me/{(BOT_USERNAME or '').strip().lstrip('@')}")]
+        )
+
+    return InlineKeyboardMarkup(rows)
+
+
 def _build_message_text(item: dict) -> str:
     title = html.escape(item.get("display_title") or item.get("title") or "Manga")
     status = html.escape(_translate_status(item.get("status") or ""))
@@ -120,7 +153,7 @@ def _build_message_text(item: dict) -> str:
 
     meta_lines = [f"» <b>Status:</b> <i>{status}</i>"]
     if latest != "N/A":
-        meta_lines.append(f"» <b>Ultimo capitulo:</b> <i>{latest}</i>")
+        meta_lines.append(f"» <b>Último capítulo:</b> <i>{latest}</i>")
     if rating != "N/A":
         meta_lines.append(f"» <b>Nota:</b> <i>{rating}</i>")
 
@@ -163,13 +196,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not title_id:
             continue
 
-        rows = [
-            [InlineKeyboardButton("📚 Abrir obra", callback_data=f"mb|title|{title_id}")],
-            [InlineKeyboardButton("📚 Lista de capitulos", callback_data=f"mb|chap|{title_id}|1")],
-        ]
-        if item.get("chapter_id"):
-            rows.append([InlineKeyboardButton("🆕 Ultimo capitulo", callback_data=f"mb|read|{item['chapter_id']}")])
-
         articles.append(
             InlineQueryResultArticle(
                 id=_result_id(title_id, index),
@@ -177,7 +203,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 description=_build_description(item),
                 thumbnail_url=item.get("cover_url") or None,
                 input_message_content=InputTextMessageContent(_build_message_text(item), parse_mode="HTML"),
-                reply_markup=InlineKeyboardMarkup(rows),
+                reply_markup=_inline_keyboard(item),
             )
         )
 
