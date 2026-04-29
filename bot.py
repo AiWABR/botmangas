@@ -26,6 +26,7 @@ from handlers.metricas import metricas, metricas_limpar
 from handlers.novoseps import auto_post_new_eps_job, postnovoseps
 from handlers.offline_admin import offlineadd, offlinecheck, offlinerevoke
 from handlers.pdf_bulk import pdfmanga
+from handlers.plan import plano
 from handlers.referral import indicacoes, referral_button
 from handlers.referral_admin import auto_referral_check_job, refstats
 from handlers.search import buscar
@@ -122,6 +123,7 @@ def main() -> None:
     app.add_handler(CommandHandler("postmanga", postmanga))
     app.add_handler(CommandHandler("pdfmanga", pdfmanga))
     app.add_handler(CommandHandler("pdfall", pdfmanga))
+    app.add_handler(CommandHandler("plano", plano))
     app.add_handler(CommandHandler("offlineadd", offlineadd))
     app.add_handler(CommandHandler("offlinecheck", offlinecheck))
     app.add_handler(CommandHandler("offlinerevoke", offlinerevoke))
