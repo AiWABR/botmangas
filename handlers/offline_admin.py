@@ -40,7 +40,7 @@ async def offlineadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = int(args[0])
     plan = normalize_plan(args[1])
     if not plan:
-        await message.reply_text("Plano invalido. Use bronze, ouro, diamante ou rubi.")
+        await message.reply_text("Plano inválido. Use bronze, ouro, diamante ou rubi.")
         return
 
     access = grant_offline_access(
@@ -52,7 +52,7 @@ async def offlineadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payload={"admin_id": user.id if user else None, "args": args},
     )
 
-    expires_at = access.get("expires_at") or "vitalicio"
+    expires_at = access.get("expires_at") or "vitalício"
     await message.reply_text(
         (
             "✅ <b>Offline liberado manualmente</b>\n\n"
@@ -96,16 +96,16 @@ async def offlinecheck(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_id = int(args[0]) if args and args[0].isdigit() else (user.id if user else 0)
     access = get_offline_access(target_id)
     if not access:
-        await message.reply_text(f"ID <code>{target_id}</code> nao tem assinatura offline salva.", parse_mode="HTML")
+        await message.reply_text(f"ID <code>{target_id}</code> não tem assinatura offline salva.", parse_mode="HTML")
         return
 
-    expires_at = access.get("expires_at") or "vitalicio"
+    expires_at = access.get("expires_at") or "vitalício"
     await message.reply_text(
         (
             "📥 <b>Assinatura offline</b>\n\n"
             f"» <b>ID:</b> <code>{target_id}</code>\n"
             f"» <b>Status:</b> <i>{html.escape(str(access.get('status') or ''))}</i>\n"
-            f"» <b>Ativa:</b> <i>{'sim' if access.get('is_active') else 'nao'}</i>\n"
+            f"» <b>Ativa:</b> <i>{'sim' if access.get('is_active') else 'não'}</i>\n"
             f"» <b>Plano:</b> <i>{html.escape(str(access.get('plan_label') or access.get('plan') or ''))}</i>\n"
             f"» <b>Validade:</b> <i>{html.escape(str(expires_at))}</i>"
         ),
