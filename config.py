@@ -125,13 +125,20 @@ ANILIST_API_URL = os.getenv("ANILIST_API_URL", "https://graphql.anilist.co").str
 ANILIST_CACHE_TTL_SECONDS = _env_int("ANILIST_CACHE_TTL_SECONDS", 21600)
 
 PDF_CACHE_DIR = str(DATA_DIR / "pdf_cache")
+EPUB_CACHE_DIR = str(DATA_DIR / "epub_cache")
 PDF_NAME_PATTERN = os.getenv(
     "PDF_NAME_PATTERN",
     "{title} - Capitulo {chapter}.pdf",
 ).strip()
+EPUB_NAME_PATTERN = os.getenv(
+    "EPUB_NAME_PATTERN",
+    "{title} - Capitulo {chapter}.epub",
+).strip()
 PDF_QUEUE_LIMIT = _env_int("PDF_QUEUE_LIMIT", 30)
+EPUB_QUEUE_LIMIT = _env_int("EPUB_QUEUE_LIMIT", PDF_QUEUE_LIMIT)
 PDF_WORKERS_SINGLE = _env_int("PDF_WORKERS_SINGLE", 1)
 PDF_WORKERS_BULK = _env_int("PDF_WORKERS_BULK", 1)
+EPUB_WORKERS = _env_int("EPUB_WORKERS", 1)
 PDF_PROTECT_CONTENT = _env_bool("PDF_PROTECT_CONTENT", True)
 PDF_BULK_ALLOWED_IDS = sorted(set(ADMIN_IDS + _env_int_list("PDF_BULK_ALLOWED_IDS")))
 PDF_BULK_MAX_CHAPTERS = _env_int("PDF_BULK_MAX_CHAPTERS", 0)
