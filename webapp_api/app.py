@@ -27,11 +27,13 @@ from config import (
 )
 from services.catalog_client import (
     flatten_chapters,
+    get_cached_title_bundle,
     get_cached_title_summary,
     get_chapter_reader_payload,
     get_home_payload,
     get_recent_chapters,
     get_title_bundle,
+    get_title_chapters_snapshot,
     get_title_search,
     search_titles,
 )
@@ -254,6 +256,10 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
     chapters = _sorted_filtered_chapters(bundle, lang)
     latest = next((item for item in chapters if item.get("chapter_id")), None)
     chapters_partial = bool(bundle.get("chapters_partial") or bundle.get("partial"))
+    try:
+        total_chapters = len(chapters) or int(bundle.get("total_chapters") or bundle.get("anilist_chapters") or 0)
+    except (TypeError, ValueError):
+        total_chapters = len(chapters)
 
     return {
         "title_id": bundle.get("title_id") or "",
@@ -271,8 +277,9 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "authors": bundle.get("authors") or [],
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
-        "total_chapters": len(chapters),
+        "total_chapters": total_chapters,
         "chapters_partial": chapters_partial,
+        "metadata_partial": bool(bundle.get("metadata_partial")),
         "chapters_error": bundle.get("chapters_error") or bundle.get("error") or "",
         "anilist_url": bundle.get("anilist_url") or "",
         "anilist_score": bundle.get("anilist_score") or 0,
@@ -305,6 +312,16 @@ def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
         or "Manga"
     )
     cover_url = summary.get("cover_url") or ""
+    try:
+        total_chapters = int(
+            summary.get("total_chapters")
+            or summary.get("chapters_count")
+            or summary.get("chapter_count")
+            or summary.get("anilist_chapters")
+            or 0
+        )
+    except (TypeError, ValueError):
+        total_chapters = 0
 
     return _public_title_bundle(
         {
@@ -313,11 +330,12 @@ def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
             "display_title": display_title,
             "cover_url": cover_url,
             "background_url": summary.get("background_url") or cover_url,
-            "status": summary.get("status") or "carregando",
-            "rating": summary.get("rating") or "",
+            "status": summary.get("status") or summary.get("anilist_status") or "carregando",
+            "rating": summary.get("rating") or summary.get("anilist_score") or "",
+            "genres": summary.get("genres") or summary.get("anilist_genres") or [],
             "chapters": [],
             "languages": [],
-            "total_chapters": 0,
+            "total_chapters": total_chapters,
             "latest_chapter": latest_chapter,
             "chapters_partial": True,
             "chapters_error": error,
@@ -468,10 +486,46 @@ async def _home_payload(limit: int) -> dict[str, Any]:
 async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[str, Any]:
     cache_kwargs = {"title_id": title_id, "lang": lang, "user_id": user_id}
     cached = await _cache_get("title", _TITLE_TTL, **cache_kwargs)
-    if cached is not None and not cached.get("chapters_partial"):
+    if cached is not None and not cached.get("chapters_partial") and not cached.get("metadata_partial"):
         return cached
 
+    def attach_user_data(public_bundle: dict[str, Any]) -> dict[str, Any]:
+        if user_id:
+            public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
+        return public_bundle
+
+    def refresh_full_bundle() -> None:
+        async def runner() -> None:
+            try:
+                await get_title_bundle(title_id, lang)
+            except Exception as error:
+                print("[WEBAPP][TITLE_REFRESH_FAIL]", title_id, repr(error))
+
+        try:
+            asyncio.create_task(runner())
+        except RuntimeError:
+            pass
+
+    catalog_cached = get_cached_title_bundle(title_id, lang)
+    if catalog_cached is not None and catalog_cached.get("chapters"):
+        public_cached = attach_user_data(_public_title_bundle(catalog_cached, lang))
+        if public_cached.get("metadata_partial"):
+            refresh_full_bundle()
+            return public_cached
+        return await _cache_set("title", public_cached, _TITLE_TTL, **cache_kwargs)
+
     async def producer() -> dict[str, Any]:
+        try:
+            snapshot = await asyncio.wait_for(
+                get_title_chapters_snapshot(title_id, lang),
+                timeout=min(_TITLE_OPEN_TIMEOUT, 4.5),
+            )
+            if snapshot.get("chapters") or snapshot.get("total_chapters"):
+                refresh_full_bundle()
+                return attach_user_data(_public_title_bundle(snapshot, lang))
+        except Exception as error:
+            print("[WEBAPP][TITLE_SNAPSHOT_PARTIAL]", title_id, repr(error))
+
         try:
             bundle = await asyncio.wait_for(
                 get_title_bundle(title_id, lang),
@@ -481,13 +535,10 @@ async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[st
             print("[WEBAPP][TITLE_PARTIAL]", title_id, repr(error))
             return _partial_title_payload(title_id, repr(error))
 
-        public_bundle = _public_title_bundle(bundle, lang)
-        if user_id:
-            public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
-        return public_bundle
+        return attach_user_data(_public_title_bundle(bundle, lang))
 
     value = await producer()
-    if value.get("chapters_partial"):
+    if value.get("chapters_partial") or value.get("metadata_partial"):
         return value
     return await _cache_set("title", value, _TITLE_TTL, **cache_kwargs)
 
