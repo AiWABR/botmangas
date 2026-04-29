@@ -28,6 +28,7 @@ from services.catalog_client import (
     prefetch_title_bundles,
 )
 from services.cakto_gateway import get_checkout_options
+from services.cakto_api import cakto_api_configured, verify_cakto_payment_for_user
 from services.metrics import (
     get_last_read_entry,
     get_read_chapter_ids,
@@ -337,13 +338,19 @@ def _offline_locked_text(bundle: dict) -> str:
 
 def _offline_locked_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarkup | None:
     options = get_checkout_options(user_id)
+    title_id = str(bundle.get("title_id") or "").strip()
     if options:
-        return InlineKeyboardMarkup(
-            [[InlineKeyboardButton(option["label"], url=option["url"])] for option in options]
-        )
+        rows = [[InlineKeyboardButton(option["label"], url=option["url"])] for option in options]
+        if title_id:
+            rows.append([InlineKeyboardButton("🔄 Ja paguei / verificar", callback_data=f"mb|paycheck|{title_id}")])
+        return InlineKeyboardMarkup(rows)
 
     subscribe_url = _normalize_url(PDF_BULK_SUBSCRIBE_URL)
     if not subscribe_url:
+        if title_id:
+            return InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔄 Ja paguei / verificar", callback_data=f"mb|paycheck|{title_id}")]]
+            )
         return None
     brand = BOT_BRAND or "Mangas Baltigo"
     return InlineKeyboardMarkup(
@@ -734,6 +741,50 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "offline", bundle["title_id"])
 
 
+async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int):
+    if not cakto_api_configured():
+        await _send_offline_locked(target, await get_title_bundle(title_id), user_id)
+        message = getattr(target, "message", None)
+        try:
+            await (message.reply_text if message else target.reply_text)(
+                (
+                    "⚠️ <b>Nao consegui verificar pela API da Cakto.</b>\n\n"
+                    "O bot ainda precisa de <code>CAKTO_CLIENT_ID</code> e "
+                    "<code>CAKTO_CLIENT_SECRET</code> no ambiente para consultar pedidos."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    try:
+        result = await verify_cakto_payment_for_user(user_id)
+    except Exception:
+        result = {"ok": False, "reason": "api_error"}
+
+    if result.get("ok"):
+        await send_offline_panel(target, context, title_id, user_id, edit=True)
+        return
+
+    reason = result.get("reason") or "not_found"
+    if reason == "not_found":
+        text = "Ainda nao achei uma compra aprovada vinculada ao seu Telegram."
+    elif reason == "order_not_paid":
+        text = "Achei seu pedido, mas ele ainda nao aparece como pago na Cakto."
+    else:
+        text = "Nao consegui confirmar o pagamento agora."
+
+    message = getattr(target, "message", None)
+    try:
+        await (message.reply_text if message else target.reply_text)(
+            f"⏳ <b>Pagamento ainda nao confirmado</b>\n\n{text}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, page: int, user_id: int | None, *, edit: bool):
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
@@ -926,6 +977,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if can_use_pdf_bulk(user_id):
                         await _show_loading_markup(query, "Carregando offline")
                     await send_offline_panel(query, context, parts[2], user_id, edit=True)
+                    return
+
+                if action == "paycheck" and len(parts) >= 3:
+                    await _safe_answer_query(query, "Verificando pagamento na Cakto...", show_alert=False)
+                    await _show_loading_markup(query, "Verificando pagamento")
+                    await verify_offline_payment_panel(query, context, parts[2], user_id)
                     return
 
                 if action == "chap" and len(parts) >= 4:
