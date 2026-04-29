@@ -23,7 +23,6 @@ from services.catalog_client import (
     get_cached_title_bundle,
     get_cached_title_summary,
     get_chapter_reader_payload,
-    get_title_overview,
     get_title_bundle,
     prefetch_reader_payloads,
     prefetch_title_bundles,
@@ -40,7 +39,6 @@ from services.telegraph_service import get_cached_chapter_page_url, get_or_creat
 
 CALLBACK_COOLDOWN = 0.8
 TELEGRAPH_INLINE_WAIT = 1.15
-TITLE_PANEL_FAST_TIMEOUT = 8.0
 CHAPTER_PANEL_FAST_TIMEOUT = 16.0
 SUPPORT_BOT_URL = "https://t.me/QGSuporteBot"
 
@@ -191,16 +189,8 @@ async def _load_title_panel_bundle(title_id: str) -> dict:
         return cached
 
     summary = get_cached_title_summary(title_id)
-    if summary is not None:
-        prefetch_title_bundles([title_id], limit=1)
-        return _fallback_title_bundle(title_id, summary=summary)
-
-    try:
-        return await asyncio.wait_for(get_title_overview(title_id), timeout=TITLE_PANEL_FAST_TIMEOUT)
-    except Exception as error:
-        print("[TITLE_PANEL][FAST_FALLBACK]", title_id, repr(error))
-        prefetch_title_bundles([title_id], limit=1)
-        return _fallback_title_bundle(title_id)
+    prefetch_title_bundles([title_id], limit=1)
+    return _fallback_title_bundle(title_id, summary=summary)
 
 
 def _pick_chapter_image(chapter: dict) -> str:
