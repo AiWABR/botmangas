@@ -1300,6 +1300,47 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
         _INFLIGHT.pop(cache_key, None)
 
 
+async def search_titles_fast(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]]:
+    normalized_query = _clean(query)
+    if not normalized_query:
+        return []
+
+    cached_items, cached_partial = _search_cache_entry(normalized_query, limit)
+    if cached_items is not None and not cached_partial:
+        return cached_items
+
+    fallback_results = _fallback_search_titles(normalized_query, limit)
+    payload = {
+        "search_input": normalized_query,
+        "search_limit": max(8, int(limit)),
+        "limit": max(8, int(limit)),
+    }
+
+    try:
+        quick_response = await asyncio.wait_for(
+            _request_form_json_quick("/api/v1/smart-search/search/", payload),
+            timeout=min(SEARCH_REMOTE_TIMEOUT, SEARCH_QUICK_TIMEOUT),
+        )
+    except Exception:
+        return fallback_results
+
+    quick_results: list[dict[str, Any]] = []
+    if quick_response.get("code") == 200:
+        quick_results = _normalize_search_response_items(
+            (quick_response.get("data") or {}).get("manga") or [],
+            normalized_query,
+        )
+
+    merged = _merge_search_result_sets(quick_results, fallback_results, limit=limit)
+    if quick_results:
+        min_results = min(max(SEARCH_MIN_REMOTE_RESULTS, 1), max(1, int(limit)))
+        _cache_set(
+            _search_cache_key(normalized_query, limit),
+            {"items": merged, "partial": len(merged) < min_results},
+        )
+    return merged
+
+
 def get_cached_search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]] | None:
     normalized_query = _clean(query)
     if not normalized_query:
