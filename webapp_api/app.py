@@ -251,6 +251,7 @@ def _sorted_filtered_chapters(bundle: dict[str, Any], lang: str) -> list[dict[st
 def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
     chapters = _sorted_filtered_chapters(bundle, lang)
     latest = next((item for item in chapters if item.get("chapter_id")), None)
+    chapters_partial = bool(bundle.get("chapters_partial") or bundle.get("partial"))
 
     return {
         "title_id": bundle.get("title_id") or "",
@@ -269,6 +270,8 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
         "total_chapters": len(chapters),
+        "chapters_partial": chapters_partial,
+        "chapters_error": bundle.get("chapters_error") or bundle.get("error") or "",
         "anilist_url": bundle.get("anilist_url") or "",
         "anilist_score": bundle.get("anilist_score") or 0,
         "anilist_format": bundle.get("anilist_format") or "",
@@ -421,6 +424,11 @@ async def _home_payload(limit: int) -> dict[str, Any]:
 
 
 async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[str, Any]:
+    cache_kwargs = {"title_id": title_id, "lang": lang, "user_id": user_id}
+    cached = await _cache_get("title", _TITLE_TTL, **cache_kwargs)
+    if cached is not None and not cached.get("chapters_partial"):
+        return cached
+
     async def producer() -> dict[str, Any]:
         bundle = await get_title_bundle(title_id, lang)
         public_bundle = _public_title_bundle(bundle, lang)
@@ -428,7 +436,10 @@ async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[st
             public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
         return public_bundle
 
-    return await _cached("title", _TITLE_TTL, producer, title_id=title_id, lang=lang, user_id=user_id)
+    value = await producer()
+    if value.get("chapters_partial"):
+        return value
+    return await _cache_set("title", value, _TITLE_TTL, **cache_kwargs)
 
 
 async def _chapter_payload(chapter_id: str, lang: str) -> dict[str, Any]:
@@ -702,10 +713,23 @@ async def root():
 @app.middleware("http")
 async def add_perf_headers(request: Request, call_next):
     start = time.perf_counter()
+    no_cache_index = request.url.path in {"/", "/miniapp", "/miniapp/", "/miniapp/index.html"}
+    if no_cache_index:
+        request.scope["headers"] = [
+            (key, value)
+            for key, value in request.scope.get("headers", [])
+            if key.lower() not in {b"if-none-match", b"if-modified-since"}
+        ]
+
     response: Response = await call_next(request)
     elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Response-Time"] = f"{elapsed_ms}ms"
-    response.headers["Cache-Control"] = response.headers.get("Cache-Control", "public, max-age=15")
+    if no_cache_index:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    else:
+        response.headers["Cache-Control"] = response.headers.get("Cache-Control", "public, max-age=15")
     return response
 
 
