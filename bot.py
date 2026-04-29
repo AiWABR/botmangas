@@ -30,7 +30,7 @@ from handlers.pdf_bulk import pdfmanga
 from handlers.plan import plano
 from handlers.referral import indicacoes, referral_button
 from handlers.referral_admin import auto_referral_check_job, refstats
-from handlers.profile import perfil
+from handlers.profile import mperfil
 from handlers.search import buscar
 from handlers.start import start
 from services.catalog_client import schedule_warm_catalog_cache, warm_catalog_cache
@@ -136,7 +136,7 @@ def main() -> None:
     app.add_handler(CommandHandler("refstats", refstats))
     app.add_handler(CommandHandler("metricas", metricas))
     app.add_handler(CommandHandler("metricaslimpar", metricas_limpar))
-    app.add_handler(CommandHandler("perfil", perfil))
+    app.add_handler(CommandHandler("mperfil", mperfil))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CommandHandler("postallmangas", postallmangas))
     app.add_handler(CommandHandler("posttodosmangas", postallmangas))
