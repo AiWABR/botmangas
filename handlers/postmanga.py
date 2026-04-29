@@ -4,7 +4,6 @@ import json
 import os
 import re
 import unicodedata
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +11,11 @@ import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_IDS, BOT_USERNAME, CANAL_POSTAGEM_MANGA, PREFERRED_CHAPTER_LANG, STICKER_DIVISOR
+from config import ADMIN_IDS, BOT_USERNAME, CANAL_POSTAGEM_MANGA, STICKER_DIVISOR
 from core.channel_target import ensure_channel_target
 from services.catalog_client import (
-    flatten_chapters,
     get_cached_title_bundle,
     get_cached_title_overview,
-    get_title_search,
     get_title_bundle,
     get_title_overview,
     search_titles,
@@ -69,10 +66,8 @@ BLOCKED_GENRE_PATTERNS = [
 
 CATALOG_SITE_BASE = os.getenv("CATALOG_SITE_BASE", "https://mangaball.net").rstrip("/")
 POSTED_MANGAS_FILE = Path("data/mangas_postados.json")
-POSTMANGA_POPULAR_LOG_FILE = Path("data/postmanga_popular_log.json")
 BULK_DELAY_SECONDS = float(os.getenv("MANGA_BULK_DELAY_SECONDS", "30"))
 BULK_HTTP_TIMEOUT = 25.0
-POPULAR_SCAN_LIMIT = int(os.getenv("POSTMANGA_POPULAR_SCAN_LIMIT", "1000"))
 DIVIDER_FALLBACK_TEXT = "━━━━━━━━━━━━━━"
 BOTDATA_BULK_RUNNING_KEY = "postallmangas_running"
 BOTDATA_BULK_TASK_KEY = "postallmangas_task"
@@ -531,98 +526,6 @@ def _save_posted_manga_ids(items: list[str]) -> None:
     )
 
 
-def _post_photo_url(manga: dict) -> str:
-    return (
-        manga.get("origin_cover_url")
-        or manga.get("cover_url")
-        or manga.get("banner_url")
-        or manga.get("background_url")
-        or ""
-    ).strip()
-
-
-def _load_popular_post_log() -> dict:
-    try:
-        if not POSTMANGA_POPULAR_LOG_FILE.exists():
-            return {"sent": {}, "skipped": {}}
-        data = json.loads(POSTMANGA_POPULAR_LOG_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {"sent": {}, "skipped": {}}
-        data.setdefault("sent", {})
-        data.setdefault("skipped", {})
-        return data
-    except Exception:
-        return {"sent": {}, "skipped": {}}
-
-
-def _save_popular_post_log(data: dict) -> None:
-    POSTMANGA_POPULAR_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    POSTMANGA_POPULAR_LOG_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
-def _log_popular_result(log_data: dict, status: str, title_id: str, title_name: str, reason: str = "") -> None:
-    title_id = str(title_id or "").strip()
-    if not title_id:
-        return
-    bucket = "sent" if status == "sent" else "skipped"
-    log_data.setdefault(bucket, {})
-    log_data[bucket][title_id] = {
-        "title": str(title_name or "Mangá").strip(),
-        "reason": str(reason or "").strip(),
-        "at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-    }
-    _save_popular_post_log(log_data)
-
-
-def _popular_processed_ids(log_data: dict) -> set[str]:
-    processed = set(_load_posted_manga_ids())
-    processed.update(str(item).strip() for item in (log_data.get("sent") or {}).keys())
-    processed.update(str(item).strip() for item in (log_data.get("skipped") or {}).keys())
-    return {item for item in processed if item}
-
-
-def _has_portuguese_chapter(bundle: dict | None, title_id: str) -> bool:
-    if not bundle:
-        return False
-    chapters = flatten_chapters(
-        {"title_id": title_id, "chapters": bundle.get("chapters") or []},
-        PREFERRED_CHAPTER_LANG,
-    )
-    return bool(chapters)
-
-
-async def _resolve_valid_popular_payload(ref: dict) -> tuple[dict | None, str]:
-    title_id = str(ref.get("title_id") or "").strip()
-    if not title_id:
-        return None, "sem_id"
-
-    overview = get_cached_title_overview(title_id)
-    if overview is None:
-        try:
-            overview = await get_title_overview(title_id)
-        except Exception:
-            overview = {}
-
-    bundle = get_cached_title_bundle(title_id)
-    if bundle is None:
-        try:
-            bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=12.0)
-        except Exception:
-            bundle = None
-
-    if not _has_portuguese_chapter(bundle, title_id):
-        return None, "sem_capitulo_pt_br"
-
-    payload = _merge_post_payload(overview or {}, ref, bundle)
-    if not _post_photo_url(payload):
-        return None, "sem_imagem"
-
-    return payload, ""
-
-
 def _bulk_running(context: ContextTypes.DEFAULT_TYPE) -> bool:
     return bool(context.application.bot_data.get(BOTDATA_BULK_RUNNING_KEY, False))
 
@@ -662,8 +565,14 @@ async def _send_divider(bot, destination) -> None:
         raise
 
 
-async def _send_manga_post(bot, destination, manga: dict, *, require_photo: bool = False) -> None:
-    photo = _post_photo_url(manga) or None
+async def _send_manga_post(bot, destination, manga: dict) -> None:
+    photo = (
+        manga.get("origin_cover_url")
+        or manga.get("cover_url")
+        or manga.get("banner_url")
+        or manga.get("background_url")
+        or None
+    )
 
     caption = _build_caption(manga)
     keyboard = _build_keyboard(manga)
@@ -679,8 +588,6 @@ async def _send_manga_post(bot, destination, manga: dict, *, require_photo: bool
             )
         except Exception as photo_error:
             print("ERRO POSTMANGA FOTO:", repr(photo_error))
-            if require_photo:
-                raise RuntimeError("imagem_nao_enviada") from photo_error
             await bot.send_message(
                 chat_id=destination,
                 text=caption,
@@ -689,8 +596,6 @@ async def _send_manga_post(bot, destination, manga: dict, *, require_photo: bool
                 disable_web_page_preview=True,
             )
     else:
-        if require_photo:
-            raise RuntimeError("sem_imagem")
         await bot.send_message(
             chat_id=destination,
             text=caption,
@@ -806,142 +711,6 @@ async def _resolve_payload_from_ref(ref: dict) -> dict | None:
     return _merge_post_payload(overview or {}, ref, bundle)
 
 
-def _reason_label(reason: str) -> str:
-    labels = {
-        "sem_id": "sem ID",
-        "sem_capitulo_pt_br": "sem capítulo em português",
-        "sem_imagem": "sem imagem",
-    }
-    return labels.get(str(reason or "").strip(), str(reason or "ignorado"))
-
-
-async def _run_postmanga_popular(
-    context: ContextTypes.DEFAULT_TYPE,
-    admin_chat_id: int,
-    reply_to_message_id: int | None,
-    target_count: int,
-) -> None:
-    _set_bulk_running(context, True)
-    status_message = None
-
-    try:
-        destination = await ensure_channel_target(context.bot, CANAL_POSTAGEM_MANGA or admin_chat_id)
-        log_data = _load_popular_post_log()
-        processed_ids = _popular_processed_ids(log_data)
-        posted_ids = _load_posted_manga_ids()
-        posted_set = set(posted_ids)
-
-        scan_limit = max(30, target_count * 3)
-        max_scan = max(scan_limit, POPULAR_SCAN_LIMIT, target_count * 10)
-        sent = 0
-        skipped = 0
-        failed = 0
-        scanned = 0
-        last_title = "-"
-        last_skip = "-"
-
-        status_message = await context.bot.send_message(
-            chat_id=admin_chat_id,
-            text=(
-                "🚀 <b>Postagem popular iniciada.</b>\n\n"
-                f"<b>Meta:</b> <code>{target_count}</code>\n"
-                "<b>Fonte:</b> <code>mais populares</code>\n"
-                "<i>Vou pular obras sem imagem ou sem capítulo em português.</i>"
-            ),
-            parse_mode="HTML",
-            reply_to_message_id=reply_to_message_id,
-        )
-
-        while sent < target_count and scan_limit <= max_scan:
-            refs = await get_title_search("getPopular", limit=scan_limit)
-            candidates = [
-                ref
-                for ref in refs
-                if str(ref.get("title_id") or "").strip()
-                and str(ref.get("title_id") or "").strip() not in processed_ids
-            ]
-
-            if not candidates:
-                if scan_limit >= max_scan:
-                    break
-                scan_limit = min(max_scan, max(scan_limit + target_count, scan_limit * 2))
-                continue
-
-            for ref in candidates:
-                if sent >= target_count:
-                    break
-
-                title_id = str(ref.get("title_id") or "").strip()
-                title_name = str(ref.get("display_title") or ref.get("title") or "Mangá").strip()
-                processed_ids.add(title_id)
-                scanned += 1
-                last_title = title_name
-
-                try:
-                    payload, reason = await _resolve_valid_popular_payload(ref)
-                    if not payload:
-                        skipped += 1
-                        last_skip = f"{title_name} ({_reason_label(reason)})"
-                        _log_popular_result(log_data, "skipped", title_id, title_name, reason)
-                    else:
-                        await _send_manga_post(context.bot, destination, payload, require_photo=True)
-                        sent += 1
-                        if title_id and title_id not in posted_set:
-                            posted_ids.append(title_id)
-                            posted_set.add(title_id)
-                            _save_posted_manga_ids(posted_ids)
-                        _log_popular_result(log_data, "sent", title_id, title_name, "")
-
-                        if sent < target_count:
-                            await asyncio.sleep(BULK_DELAY_SECONDS)
-                except Exception as error:
-                    failed += 1
-                    reason = f"erro: {str(error)[:160]}"
-                    last_skip = f"{title_name} ({reason})"
-                    _log_popular_result(log_data, "skipped", title_id, title_name, reason)
-                    print("ERRO POSTMANGA POPULAR:", repr(error), title_id, title_name)
-
-                await _safe_edit_status(
-                    status_message,
-                    (
-                        "🚀 <b>Postagem popular em andamento.</b>\n\n"
-                        f"<b>Meta:</b> <code>{target_count}</code>\n"
-                        f"<b>Enviados:</b> <code>{sent}</code>\n"
-                        f"<b>Pulados:</b> <code>{skipped}</code>\n"
-                        f"<b>Falhas:</b> <code>{failed}</code>\n"
-                        f"<b>Verificados:</b> <code>{scanned}</code>\n"
-                        f"<b>Busca atual:</b> <code>top {scan_limit}</code>\n"
-                        f"<b>Atual:</b> <code>{html.escape(last_title)}</code>\n"
-                        f"<b>Último pulo:</b> <code>{html.escape(last_skip)}</code>"
-                    ),
-                )
-
-            if sent >= target_count:
-                break
-
-            if scan_limit >= max_scan:
-                break
-            scan_limit = min(max_scan, max(scan_limit + target_count, scan_limit * 2))
-
-        final_title = "✅ <b>Meta concluída.</b>" if sent >= target_count else "⚠️ <b>Postagem popular finalizada.</b>"
-        await _safe_edit_status(
-            status_message,
-            (
-                f"{final_title}\n\n"
-                f"<b>Meta:</b> <code>{target_count}</code>\n"
-                f"<b>Enviados:</b> <code>{sent}</code>\n"
-                f"<b>Pulados:</b> <code>{skipped}</code>\n"
-                f"<b>Falhas:</b> <code>{failed}</code>\n"
-                f"<b>Verificados:</b> <code>{scanned}</code>\n"
-                f"<b>Limite de busca:</b> <code>top {scan_limit}</code>"
-            ),
-        )
-
-    finally:
-        _set_bulk_running(context, False)
-        context.application.bot_data.pop(BOTDATA_BULK_TASK_KEY, None)
-
-
 async def _run_postallmangas(
     context: ContextTypes.DEFAULT_TYPE,
     admin_chat_id: int,
@@ -1049,45 +818,8 @@ async def postmanga(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ <b>Faltou o nome do mangá.</b>\n\n"
             "Use assim:\n"
             "<code>/postmanga nome do mangá</code>\n\n"
-            "Ou poste populares em lote:\n"
-            "<code>/postmanga 10</code>\n\n"
             "📌 <b>Exemplo:</b>\n"
             "<code>/postmanga solo leveling</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    if len(context.args) == 1 and str(context.args[0]).strip().isdigit():
-        target_count = int(str(context.args[0]).strip())
-        if target_count <= 0:
-            await message.reply_text(
-                "❌ <b>A quantidade precisa ser maior que zero.</b>",
-                parse_mode="HTML",
-            )
-            return
-
-        if _bulk_running(context):
-            await message.reply_text(
-                "⏳ <b>Já existe uma postagem em lote rodando agora.</b>",
-                parse_mode="HTML",
-            )
-            return
-
-        task = context.application.create_task(
-            _run_postmanga_popular(
-                context=context,
-                admin_chat_id=message.chat_id,
-                reply_to_message_id=message.message_id,
-                target_count=target_count,
-            )
-        )
-        context.application.bot_data[BOTDATA_BULK_TASK_KEY] = task
-        await message.reply_text(
-            (
-                "🚀 <b>Fila de populares iniciada.</b>\n\n"
-                f"Vou postar <code>{target_count}</code> obras populares válidas.\n"
-                "<i>Sem imagem ou sem capítulo em português = pulo e registro.</i>"
-            ),
             parse_mode="HTML",
         )
         return
