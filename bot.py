@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 
 from config import BOT_TOKEN
+from core.epub_queue import start_epub_workers, stop_epub_workers
 from core.http_client import close_http_client
 from core.pdf_queue import start_pdf_workers, stop_pdf_workers
 from handlers.broadcast import (
@@ -51,10 +52,12 @@ BOT_API_WRITE_TIMEOUT = 25.0
 
 async def post_init(app: Application) -> None:
     await start_pdf_workers(app)
+    await start_epub_workers(app)
     schedule_warm_catalog_cache()
 
 
 async def post_shutdown(app: Application) -> None:
+    await stop_epub_workers(app)
     await stop_pdf_workers(app)
     await close_http_client()
 
