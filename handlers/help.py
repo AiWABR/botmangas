@@ -23,6 +23,7 @@ async def ajuda(update, context):
         "• Escolha um capitulo\n"
         "• Leia pela leitura rapida ou gere PDF\n\n"
         "🎁 <b>Extras</b>\n"
+        "• <code>/plano</code> para ver seu plano offline\n"
         "• <code>/indicacoes</code> para seu link de convites\n"
         "• <code>/postnovoscaps</code> para admins postarem capitulos recentes\n"
         "• <code>/postmanga</code> para admins montarem uma postagem de destaque"
