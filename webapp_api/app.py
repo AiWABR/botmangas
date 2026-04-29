@@ -78,6 +78,7 @@ _TITLE_TTL = 90
 _CHAPTER_TTL = 90
 _SECTIONS_TTL = 25
 _SEARCH_TTL = 20
+_TITLE_OPEN_TIMEOUT = 22.0
 
 
 def _now() -> float:
@@ -284,6 +285,23 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
     }
 
 
+def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
+    return _public_title_bundle(
+        {
+            "title_id": title_id,
+            "title": "Manga",
+            "status": "carregando",
+            "chapters": [],
+            "languages": [],
+            "total_chapters": 0,
+            "latest_chapter": None,
+            "chapters_partial": True,
+            "chapters_error": error,
+        },
+        PREFERRED_CHAPTER_LANG,
+    )
+
+
 def _public_reader_payload(payload: dict[str, Any]) -> dict[str, Any]:
     images = [img for img in (payload.get("images") or []) if str(img or "").strip()]
     return {
@@ -430,7 +448,15 @@ async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[st
         return cached
 
     async def producer() -> dict[str, Any]:
-        bundle = await get_title_bundle(title_id, lang)
+        try:
+            bundle = await asyncio.wait_for(
+                get_title_bundle(title_id, lang),
+                timeout=_TITLE_OPEN_TIMEOUT,
+            )
+        except Exception as error:
+            print("[WEBAPP][TITLE_PARTIAL]", title_id, repr(error))
+            return _partial_title_payload(title_id, repr(error))
+
         public_bundle = _public_title_bundle(bundle, lang)
         if user_id:
             public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
