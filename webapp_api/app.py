@@ -526,6 +526,21 @@ async def _notify_cakto_user(result: dict[str, Any]) -> None:
         pass
 
 
+def _log_cakto_webhook_payload(payload: dict[str, Any], result: dict[str, Any] | None = None) -> None:
+    path = Path(DATA_DIR) / "cakto_webhooks.jsonl"
+    record = {
+        "received_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+        "result": result or {},
+        "payload": payload,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
 @app.post("/api/webhooks/cakto")
 async def api_cakto_webhook(request: Request):
     try:
@@ -537,9 +552,11 @@ async def api_cakto_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Payload do webhook precisa ser JSON object.")
 
     if not _cakto_secret_is_valid(request, payload):
+        _log_cakto_webhook_payload(payload, {"action": "unauthorized"})
         raise HTTPException(status_code=401, detail="Webhook Cakto nao autorizado.")
 
     result = process_cakto_webhook(payload)
+    _log_cakto_webhook_payload(payload, result)
     if result.get("action") in {"granted", "revoked"}:
         asyncio.create_task(_notify_cakto_user(result))
 
