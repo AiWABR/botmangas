@@ -41,6 +41,12 @@ from services.cakto_gateway import extract_webhook_secret_values, process_cakto_
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, mark_chapter_read
 from services.offline_access import init_offline_access_db
+from services.profile_store import (
+    list_user_favorites,
+    merge_user_favorites,
+    remove_user_favorite,
+    set_user_favorite,
+)
 
 MINIAPP_DIR = BASE_DIR / "miniapp"
 PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
@@ -71,6 +77,30 @@ class ProgressPayload(BaseModel):
     chapter_url: str = ""
     page_index: int = 0
     total_pages: int = 0
+
+
+class FavoritePayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    title_id: str = Field(min_length=1)
+    title: str = ""
+    display_title: str = ""
+    cover_url: str = ""
+    background_url: str = ""
+    latest_chapter: Any = ""
+    latest_chapter_id: Any = ""
+    chapter_id: Any = ""
+    chapter_number: Any = ""
+    status: Any = ""
+    anilist_score: Any = ""
+    rating: Any = ""
+    added_at: int | float | None = None
+    updated_at: int | float | None = None
+    favorite: bool = True
+
+
+class FavoritesSyncPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    favorites: list[dict[str, Any]] = Field(default_factory=list)
 
 
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -784,6 +814,27 @@ async def api_save_progress(payload: ProgressPayload):
 
     await _invalidate_prefix("cache")
     return {"ok": True}
+
+
+@app.get("/api/favorites")
+async def api_get_favorites(user_id: str = Query(...)):
+    return {"items": list_user_favorites(user_id, limit=200)}
+
+
+@app.post("/api/favorites")
+async def api_save_favorite(payload: FavoritePayload):
+    if not payload.favorite:
+        remove_user_favorite(payload.user_id, payload.title_id)
+        return {"ok": True, "items": list_user_favorites(payload.user_id, limit=200)}
+
+    favorite = payload.model_dump(exclude={"favorite", "user_id"})
+    set_user_favorite(payload.user_id, favorite)
+    return {"ok": True, "items": list_user_favorites(payload.user_id, limit=200)}
+
+
+@app.post("/api/favorites/sync")
+async def api_sync_favorites(payload: FavoritesSyncPayload):
+    return {"ok": True, "items": merge_user_favorites(payload.user_id, payload.favorites)}
 
 
 @app.post("/api/refresh")
