@@ -78,6 +78,13 @@ class ProgressPayload(BaseModel):
     chapter_url: str = ""
     page_index: int = 0
     total_pages: int = 0
+    cover_url: str = ""
+    updated_at: int | float | str | None = None
+
+
+class ProgressSyncPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    progress: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FavoritePayload(BaseModel):
@@ -850,6 +857,8 @@ async def api_save_progress(payload: ProgressPayload):
     data = _load_progress()
     key = _progress_key(payload.user_id, payload.title_id)
     stored = payload.model_dump()
+    if not stored.get("updated_at"):
+        stored["updated_at"] = int(time.time() * 1000)
     data[key] = stored
     _save_progress(data)
 
@@ -864,6 +873,65 @@ async def api_save_progress(payload: ProgressPayload):
 
     await _invalidate_prefix("cache")
     return {"ok": True}
+
+
+@app.post("/api/progress/sync")
+async def api_sync_progress(payload: ProgressSyncPayload):
+    data = _load_progress()
+    now_ms = int(time.time() * 1000)
+
+    for raw_item in (payload.progress or [])[:200]:
+        if not isinstance(raw_item, dict):
+            continue
+
+        title_id = str(raw_item.get("title_id") or "").strip()
+        chapter_id = str(raw_item.get("chapter_id") or "").strip()
+        if not title_id or not chapter_id:
+            continue
+
+        key = _progress_key(payload.user_id, title_id)
+        current = data.get(key) or {}
+        incoming_updated = _public_updated_at_ms(raw_item.get("updated_at") or now_ms)
+        current_updated = _public_updated_at_ms(current.get("updated_at")) if current else 0
+        if current and incoming_updated < current_updated:
+            continue
+
+        record = {
+            "user_id": payload.user_id,
+            "title_id": title_id,
+            "title_name": str(raw_item.get("title_name") or raw_item.get("title") or "").strip(),
+            "chapter_id": chapter_id,
+            "chapter_number": str(raw_item.get("chapter_number") or "").strip(),
+            "chapter_url": str(raw_item.get("chapter_url") or "").strip(),
+            "page_index": int(raw_item.get("page_index") or 0),
+            "total_pages": int(raw_item.get("total_pages") or 0),
+            "cover_url": str(raw_item.get("cover_url") or "").strip(),
+            "updated_at": incoming_updated,
+        }
+        data[key] = {**current, **record}
+
+        try:
+            mark_chapter_read(
+                user_id=payload.user_id,
+                title_id=title_id,
+                chapter_id=chapter_id,
+                chapter_number=record["chapter_number"],
+                title_name=record["title_name"],
+                chapter_url=record["chapter_url"],
+            )
+        except Exception:
+            pass
+
+    _save_progress(data)
+    items = get_recently_read(payload.user_id, limit=200)
+    return {
+        "ok": True,
+        "items": [
+            _public_history_item(payload.user_id, item, data)
+            for item in items
+            if item.get("title_id") and item.get("chapter_id")
+        ],
+    }
 
 
 @app.get("/api/favorites")
