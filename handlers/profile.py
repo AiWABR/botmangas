@@ -81,12 +81,9 @@ def _caption(
         "👤 <b>SEU PERFIL</b>\n\n"
         f"💮 <b>ID:</b> <code>{user_id}</code>\n"
         f"🏮 <b>Nome:</b> {html.escape(name or 'Usuario')}\n\n"
-        "📊 <b>Estatísticas do WebApp</b>\n"
         f"⭐ <b>Favoritos:</b> {favorites_count}\n"
         f"✅ <b>Caps lidos:</b> {chapters_read_count}\n"
         f"📚 <b>Obras abertas:</b> {opened_titles_count}\n"
-        f"📄 <b>Páginas lidas:</b> {pages_read_count:n}\n\n"
-        f"{hint}"
     )
 
 
