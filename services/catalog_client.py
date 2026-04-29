@@ -69,6 +69,8 @@ _BROWSER_SESSION_LOCK = asyncio.Lock()
 _WARMUP_TASK: asyncio.Task | None = None
 
 PLAYWRIGHT_SESSION_TTL = 1800
+PLAYWRIGHT_NAV_TIMEOUT = 30000
+PLAYWRIGHT_META_TIMEOUT = 10000
 SEARCH_REMOTE_TIMEOUT = 8.0
 SEARCH_QUICK_TIMEOUT = 3.4
 SEARCH_RICH_TIMEOUT = 4.6
@@ -562,6 +564,30 @@ def _browser_session_snapshot() -> dict[str, Any] | None:
     }
 
 
+async def _prepare_playwright_page(context, page) -> None:
+    async def _route(route):
+        if route.request.resource_type in {"image", "media", "font", "stylesheet"}:
+            await route.abort()
+            return
+        await route.continue_()
+
+    try:
+        await context.route("**/*", _route)
+    except Exception:
+        pass
+
+    await page.goto(
+        f"{BASE_URL}/",
+        wait_until="domcontentloaded",
+        timeout=PLAYWRIGHT_NAV_TIMEOUT,
+    )
+
+    try:
+        await page.locator("meta[name='csrf-token']").wait_for(timeout=PLAYWRIGHT_META_TIMEOUT)
+    except Exception:
+        pass
+
+
 async def _ensure_browser_session(force_refresh: bool = False) -> dict[str, Any]:
     if not force_refresh and _browser_session_is_valid():
         return {
@@ -586,25 +612,26 @@ async def _ensure_browser_session(force_refresh: bool = False) -> dict[str, Any]
 
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(**_playwright_launch_kwargs())
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                locale="pt-BR",
-            )
-            page = await context.new_page()
-            await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
+            try:
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    locale="pt-BR",
+                )
+                page = await context.new_page()
+                await _prepare_playwright_page(context, page)
 
-            csrf_token = _clean(await page.locator("meta[name='csrf-token']").get_attribute("content"))
-            cookies = {
-                _clean(item.get("name")): _clean(item.get("value"))
-                for item in (await context.cookies())
-                if _clean(item.get("name")) and _clean(item.get("value"))
-            }
-
-            await browser.close()
+                csrf_token = _clean(await page.locator("meta[name='csrf-token']").get_attribute("content"))
+                cookies = {
+                    _clean(item.get("name")): _clean(item.get("value"))
+                    for item in (await context.cookies())
+                    if _clean(item.get("name")) and _clean(item.get("value"))
+                }
+            finally:
+                await browser.close()
 
         if not csrf_token or not cookies:
             raise RuntimeError("Nao foi possivel obter a sessao protegida da fonte.")
@@ -660,25 +687,32 @@ async def _request_form_json_via_playwright(path: str, data: dict[str, Any], ref
 
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**_playwright_launch_kwargs())
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="pt-BR",
-        )
-        page = await context.new_page()
-        await page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=120000)
-        headers = await _build_ajax_headers(
-            {
-                "csrf_token": _clean(await page.locator("meta[name='csrf-token']").get_attribute("content")),
-            },
-            referer,
-        )
-        response = await context.request.post(url, form=data, headers=headers)
-        response_text = await response.text()
-        await browser.close()
+        try:
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                locale="pt-BR",
+            )
+            page = await context.new_page()
+            await _prepare_playwright_page(context, page)
+            headers = await _build_ajax_headers(
+                {
+                    "csrf_token": _clean(await page.locator("meta[name='csrf-token']").get_attribute("content")),
+                },
+                referer,
+            )
+            response = await context.request.post(
+                url,
+                form=data,
+                headers=headers,
+                timeout=PLAYWRIGHT_NAV_TIMEOUT,
+            )
+            response_text = await response.text()
+        finally:
+            await browser.close()
 
     if response.status != 200:
         raise RuntimeError(f"Playwright recebeu HTTP {response.status} ao consultar {url}.")
@@ -1167,6 +1201,23 @@ async def get_csrf_token(force_refresh: bool = False, *, allow_browser: bool = T
     if not force_refresh and _CSRF_TOKEN["value"] and time.time() < _CSRF_TOKEN["expires_at"]:
         return _CSRF_TOKEN["value"]
 
+    async def _token_from_html(*, fast: bool) -> str:
+        html_text = await (_request_text_fast(BASE_URL) if fast else _request_text(BASE_URL))
+        soup = BeautifulSoup(html_text, "html.parser")
+        meta = soup.find("meta", attrs={"name": "csrf-token"})
+        token_value = _clean(meta.get("content") if meta else "")
+        if not token_value:
+            raise RuntimeError("Nao foi possivel obter o token CSRF da fonte.")
+        return token_value
+
+    try:
+        token = await _token_from_html(fast=True)
+        _CSRF_TOKEN["value"] = token
+        _CSRF_TOKEN["expires_at"] = time.time() + 1800
+        return token
+    except Exception:
+        pass
+
     if allow_browser:
         try:
             browser_session = await _ensure_browser_session(force_refresh=force_refresh)
@@ -1178,13 +1229,7 @@ async def get_csrf_token(force_refresh: bool = False, *, allow_browser: bool = T
         except Exception:
             pass
 
-    html_text = await (_request_text(BASE_URL) if allow_browser else _request_text_fast(BASE_URL))
-    soup = BeautifulSoup(html_text, "html.parser")
-    meta = soup.find("meta", attrs={"name": "csrf-token"})
-    token = _clean(meta.get("content") if meta else "")
-    if not token:
-        raise RuntimeError("Nao foi possivel obter o token CSRF da fonte.")
-
+    token = await _token_from_html(fast=not allow_browser)
     _CSRF_TOKEN["value"] = token
     _CSRF_TOKEN["expires_at"] = time.time() + 1800
     return token
@@ -1365,19 +1410,34 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
             payload["lang"] = lang
 
         referer = _TITLE_URL_CACHE.get(title_id) or _absolute_url(f"/title-detail/{title_id}/")
+        first_error: Exception | None = None
         try:
-            response = await _request_form_json_via_playwright(
-                "/api/v1/chapter/chapter-listing-by-title-id/",
-                payload,
-                referer,
-            )
-        except Exception:
             response = await _request_form_json(
                 "/api/v1/chapter/chapter-listing-by-title-id/",
                 payload,
             )
+        except Exception as error:
+            first_error = error
+            try:
+                response = await _request_form_json_via_playwright(
+                    "/api/v1/chapter/chapter-listing-by-title-id/",
+                    payload,
+                    referer,
+                )
+            except Exception as playwright_error:
+                print("[CATALOG][CHAPTERS]", title_id, repr(first_error), repr(playwright_error))
+                return {
+                    "title_id": title_id,
+                    "chapters": [],
+                    "languages": [],
+                    "total_translations": 0,
+                    "partial": True,
+                    "error": repr(first_error),
+                }
+
         if response.get("code") != 200:
-            return {"title_id": title_id, "chapters": [], "languages": [], "total_translations": 0}
+            print("[CATALOG][CHAPTERS_STATUS]", title_id, response.get("code"))
+            return {"title_id": title_id, "chapters": [], "languages": [], "total_translations": 0, "partial": True}
 
         chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
         return {
@@ -1387,7 +1447,18 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
             "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
         }
 
-    return await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
+    try:
+        return await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
+    except Exception as error:
+        print("[CATALOG][CHAPTERS_UNHANDLED]", title_id, repr(error))
+        return {
+            "title_id": title_id,
+            "chapters": [],
+            "languages": [],
+            "total_translations": 0,
+            "partial": True,
+            "error": repr(error),
+        }
 
 
 def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None = None, *, ascending: bool = False) -> list[dict[str, Any]]:
