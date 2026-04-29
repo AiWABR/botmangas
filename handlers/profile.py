@@ -74,7 +74,7 @@ def _caption(
     hint = (
         "Use os botões abaixo para abrir suas leituras e favoritos no WebApp."
         if has_keyboard
-        else "Abra o WebApp pelo bot para sincronizar favoritos e leituras."
+        else "No privado com o bot eu mostro os botões do WebApp."
     )
     return (
         "👤 <b>SEU PERFIL</b>\n\n"
@@ -88,12 +88,13 @@ def _caption(
     )
 
 
-async def perfil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mperfil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_channel_membership(update, context):
         return
 
     user = update.effective_user
     message = update.effective_message
+    chat = update.effective_chat
     if not user or not message:
         return
 
@@ -117,7 +118,8 @@ async def perfil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recent_reads=reading_summary.get("recent_reads") or [],
     )
 
-    keyboard = _profile_keyboard()
+    is_private = bool(chat and chat.type == "private")
+    keyboard = _profile_keyboard() if is_private else None
     await message.reply_photo(
         photo=card,
         caption=_caption(
@@ -127,7 +129,7 @@ async def perfil(update: Update, context: ContextTypes.DEFAULT_TYPE):
             following_count=int(reading_summary.get("title_count") or 0),
             favorites_count=favorites_count,
             chapters_read_count=int(reading_summary.get("chapter_count") or 0),
-            has_keyboard=keyboard is not None,
+            has_keyboard=is_private and keyboard is not None,
         ),
         parse_mode="HTML",
         reply_markup=keyboard,
