@@ -991,6 +991,7 @@ function skeletonGrid(count = 6) {
 
 function timeAgo(ts) {
   if (!ts) return "";
+  if (typeof ts !== "number") ts = normalizeRemoteTime(ts);
   const now = Date.now();
   const diff = now - ts;
   const mins = Math.floor(diff / 60000);
@@ -1075,7 +1076,15 @@ function markUpdatesSeen(updates) {
 //  API
 // ══════════════════════════════════════════
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, credentials: "same-origin" });
+  const { timeoutMs = 10000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(path, { ...fetchOptions, credentials: "same-origin", signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
     try { const d = await response.json(); message = d?.detail || d?.message || message; } catch (_) {}
@@ -1111,6 +1120,57 @@ async function syncFavoritesWithServer() {
     });
     applyServerFavorites(response.items || []);
   } catch (_) {}
+}
+
+function normalizeRemoteTime(value) {
+  if (!value) return Date.now();
+  if (typeof value === "number") return value;
+  const parsed = Date.parse(String(value).replace(" ", "T") + "Z");
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function applyServerProgress(items = []) {
+  let changed = false;
+  items.forEach(item => {
+    const titleId = item?.title_id || "";
+    const chapterId = item?.chapter_id || "";
+    if (!titleId || !chapterId) return;
+    const current = state.localProgress[titleId] || null;
+    const incoming = {
+      title_id: titleId,
+      title_name: item.title_name || current?.title_name || "Mangá",
+      chapter_id: chapterId,
+      chapter_number: item.chapter_number || current?.chapter_number || "",
+      chapter_url: item.chapter_url || current?.chapter_url || "",
+      page_index: Number(item.page_index || current?.page_index || 1),
+      total_pages: Number(item.total_pages || current?.total_pages || 0),
+      cover_url: item.cover_url || current?.cover_url || "",
+      updated_at: normalizeRemoteTime(item.updated_at),
+    };
+    if (!current || incoming.updated_at >= Number(current.updated_at || 0)) {
+      state.localProgress[titleId] = { ...current, ...incoming };
+      changed = true;
+    }
+  });
+  if (changed) {
+    saveLocalProgress();
+    updateNavBadge();
+  }
+}
+
+async function syncProgressWithServer() {
+  if (!state.userId) return;
+  try {
+    const response = await api(`/api/history?user_id=${encodeURIComponent(state.userId)}&limit=120`);
+    applyServerProgress(response.items || []);
+  } catch (_) {}
+}
+
+async function syncUserDataWithServer() {
+  await Promise.all([
+    syncFavoritesWithServer(),
+    syncProgressWithServer(),
+  ]);
 }
 
 async function syncFavoriteWithServer(titleId, favorite, meta = {}) {
@@ -2045,13 +2105,13 @@ window.jumpTo = (id) => { const el = document.getElementById(id); if (el) el.scr
 
 // Bottom nav clicks
 document.querySelectorAll(".nav-item").forEach(item => {
-  item.addEventListener("click", () => {
+  item.addEventListener("click", async () => {
     const tab = item.dataset.tab;
     if (tab === "home") { if (state.currentPage === "homePage") window.scrollTo({ top: 0, behavior: "smooth" }); else loadHome(); }
-    else if (tab === "lib") openLibPage();
-    else if (tab === "updates") openUpdatesPage();
-    else if (tab === "history") openHistoryPage();
-    else if (tab === "profile") openProfilePage();
+    else if (tab === "lib") { await syncFavoritesWithServer(); openLibPage(); }
+    else if (tab === "updates") { await syncFavoritesWithServer(); openUpdatesPage(); }
+    else if (tab === "history") { await syncProgressWithServer(); openHistoryPage(); }
+    else if (tab === "profile") { await syncUserDataWithServer(); openProfilePage(); }
   });
 });
 
@@ -2089,18 +2149,22 @@ setInterval(() => { state.cache.home = null; }, 3 * 60 * 1000);
 
 window.addEventListener("popstate", async () => {
   const boot = getBootParams();
-  if (boot.route === "lib") { openLibPage(); return; }
-  if (boot.route === "updates") { openUpdatesPage(); return; }
-  if (boot.route === "history") { openHistoryPage(); return; }
-  if (boot.route === "profile") { openProfilePage(); return; }
+  if (boot.route === "lib") { await syncFavoritesWithServer(); openLibPage(); return; }
+  if (boot.route === "updates") { await syncFavoritesWithServer(); openUpdatesPage(); return; }
+  if (boot.route === "history") { await syncProgressWithServer(); openHistoryPage(); return; }
+  if (boot.route === "profile") { await syncUserDataWithServer(); openProfilePage(); return; }
   if (boot.chapterId) { await openChapter(boot.chapterId, false, { replaceHistory: true }); return; }
   if (boot.titleId) { await openTitle(boot.titleId, false, { route: boot.route === "chapters" ? "chapters" : "detail", replaceHistory: true }); return; }
   await loadHome();
 });
 
 async function boot() {
-  await syncFavoritesWithServer();
   const b = getBootParams();
+  if (["lib", "updates", "history", "profile"].includes(b.route)) {
+    await syncUserDataWithServer();
+  } else {
+    syncUserDataWithServer().catch(() => {});
+  }
   if (b.route === "lib") { await loadHome(); openLibPage(); return; }
   if (b.route === "updates") { await loadHome(); openUpdatesPage(); return; }
   if (b.route === "history") { openHistoryPage(); return; }
