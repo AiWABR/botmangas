@@ -433,6 +433,50 @@ def get_recently_read(user_id: int | str, limit: int = 10) -> list[dict[str, Any
     ]
 
 
+def get_reading_summary(user_id: int | str, recent_limit: int = 5) -> dict[str, Any]:
+    user_id = str(user_id).strip()
+    recent_limit = max(1, int(recent_limit))
+
+    with _get_conn() as conn:
+        stats = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS chapter_count,
+                COUNT(DISTINCT title_id) AS title_count
+            FROM reading_history
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        rows = conn.execute(
+            """
+            SELECT title_id, title_name, chapter_id, chapter_number, chapter_url, updated_at
+            FROM reading_history
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, recent_limit),
+        ).fetchall()
+
+    return {
+        "title_count": int(stats["title_count"] if stats else 0),
+        "chapter_count": int(stats["chapter_count"] if stats else 0),
+        "recent_reads": [
+            {
+                "title_id": row["title_id"],
+                "title_name": row["title_name"] or "",
+                "chapter_id": row["chapter_id"],
+                "chapter_number": row["chapter_number"] or "",
+                "chapter_url": row["chapter_url"] or "",
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
 def get_search_seed_titles(limit: int = 300) -> list[dict[str, Any]]:
     limit = max(1, int(limit))
     catalog: dict[str, dict[str, Any]] = {}
