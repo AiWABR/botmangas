@@ -82,6 +82,8 @@ SEARCH_MIN_REMOTE_RESULTS = 6
 SEARCH_CACHE_VERSION = "v2"
 LOCAL_SEARCH_SEED_TTL = 300
 FORM_QUICK_TIMEOUT = httpx.Timeout(5.5, connect=4.0, read=5.5, write=5.5, pool=5.5)
+CHAPTER_LIST_QUICK_TIMEOUT = 4.2
+CHAPTER_LIST_CACHED_TIMEOUT = httpx.Timeout(2.8, connect=2.0, read=2.8, write=2.8, pool=2.8)
 
 SEARCH_TTL = min(max(API_CACHE_TTL_SECONDS, 180), 1800)
 HOME_TTL = min(max(API_CACHE_TTL_SECONDS, 300), 1800)
@@ -616,6 +618,12 @@ def _remember_title_summary(item: dict[str, Any]) -> None:
         "background_url",
         "status",
         "rating",
+        "genres",
+        "anilist_genres",
+        "total_chapters",
+        "anilist_chapters",
+        "anilist_status",
+        "anilist_score",
         "latest_chapter",
         "chapter_id",
         "chapter_url",
@@ -1333,6 +1341,40 @@ async def _request_form_json_quick(path: str, data: dict[str, Any]) -> dict[str,
     raise RuntimeError(f"Falha ao consultar {url}: {last_error!r}")
 
 
+async def _request_form_json_cached_quick(path: str, data: dict[str, Any]) -> dict[str, Any]:
+    client = await get_http_client()
+    url = _absolute_url(path)
+    referer = _absolute_url(_build_ajax_referer(path, data)) or f"{BASE_URL}/"
+    csrf_token = ""
+    cookies: dict[str, str] = {}
+
+    if _CSRF_TOKEN["value"] and time.time() < _CSRF_TOKEN["expires_at"]:
+        csrf_token = _clean(_CSRF_TOKEN["value"])
+    elif _browser_session_is_valid():
+        csrf_token = _clean(_BROWSER_SESSION.get("csrf_token"))
+        cookies = dict(_BROWSER_SESSION.get("cookies") or {})
+
+    headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": referer,
+        "Origin": BASE_URL,
+    }
+    if csrf_token:
+        headers["X-CSRF-TOKEN"] = csrf_token
+
+    async with _HTTP_SEMAPHORE:
+        response = await client.post(
+            url,
+            data=data,
+            headers=headers,
+            cookies=cookies or None,
+            timeout=CHAPTER_LIST_CACHED_TIMEOUT,
+        )
+    response.raise_for_status()
+    return response.json()
+
+
 async def get_csrf_token(force_refresh: bool = False, *, allow_browser: bool = True) -> str:
     if not force_refresh and _CSRF_TOKEN["value"] and time.time() < _CSRF_TOKEN["expires_at"]:
         return _CSRF_TOKEN["value"]
@@ -1532,6 +1574,24 @@ def get_cached_search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict
     return cached
 
 
+def _chapter_count_from_summary(summary: dict[str, Any]) -> int:
+    for key in ("total_chapters", "chapters_count", "chapter_count", "anilist_chapters"):
+        value = summary.get(key)
+        if value in (None, "", []):
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _title_bundle_cache_key(title_ref: str, resolved_lang: str) -> str:
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref)
+    return f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
+
+
 async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any]:
     title_id = _extract_title_id(title_id) or _clean(title_id)
     if not title_id:
@@ -1548,28 +1608,37 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
         referer = _TITLE_URL_CACHE.get(title_id) or _absolute_url(f"/title-detail/{title_id}/")
         first_error: Exception | None = None
         try:
-            response = await _request_form_json(
-                "/api/v1/chapter/chapter-listing-by-title-id/",
-                payload,
+            response = await asyncio.wait_for(
+                _request_form_json_cached_quick(
+                    "/api/v1/chapter/chapter-listing-by-title-id/",
+                    payload,
+                ),
+                timeout=3.0,
             )
         except Exception as error:
             first_error = error
             try:
-                response = await _request_form_json_via_playwright(
+                response = await _request_form_json(
                     "/api/v1/chapter/chapter-listing-by-title-id/",
                     payload,
-                    referer,
                 )
-            except Exception as playwright_error:
-                print("[CATALOG][CHAPTERS]", title_id, repr(first_error), repr(playwright_error))
-                return {
-                    "title_id": title_id,
-                    "chapters": [],
-                    "languages": [],
-                    "total_translations": 0,
-                    "partial": True,
-                    "error": repr(first_error),
-                }
+            except Exception as full_error:
+                try:
+                    response = await _request_form_json_via_playwright(
+                        "/api/v1/chapter/chapter-listing-by-title-id/",
+                        payload,
+                        referer,
+                    )
+                except Exception as playwright_error:
+                    print("[CATALOG][CHAPTERS]", title_id, repr(first_error), repr(full_error), repr(playwright_error))
+                    return {
+                        "title_id": title_id,
+                        "chapters": [],
+                        "languages": [],
+                        "total_translations": 0,
+                        "partial": True,
+                        "error": repr(first_error),
+                    }
 
         if response.get("code") != 200:
             print("[CATALOG][CHAPTERS_STATUS]", title_id, response.get("code"))
@@ -1598,6 +1667,68 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
             "partial": True,
             "error": repr(error),
         }
+
+
+async def get_chapter_list_fast(title_id: str, lang: str | None = None) -> dict[str, Any]:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        raise ValueError("title_id invalido para listar capitulos.")
+
+    lang = _clean(lang).lower() or ""
+    full_cache_key = f"chapter-list:{title_id}:{lang}"
+    cached = _cache_get(full_cache_key, CHAPTERS_TTL)
+    if isinstance(cached, dict) and not cached.get("partial"):
+        return dict(cached)
+
+    cache_key = f"chapter-list-fast:{title_id}:{lang}"
+
+    async def _load():
+        payload: dict[str, Any] = {"title_id": title_id}
+        if lang:
+            payload["lang"] = lang
+
+        try:
+            response = await asyncio.wait_for(
+                _request_form_json_quick(
+                    "/api/v1/chapter/chapter-listing-by-title-id/",
+                    payload,
+                ),
+                timeout=CHAPTER_LIST_QUICK_TIMEOUT,
+            )
+        except Exception as error:
+            return {
+                "title_id": title_id,
+                "chapters": [],
+                "languages": [],
+                "total_translations": 0,
+                "partial": True,
+                "error": repr(error),
+            }
+
+        if response.get("code") != 200:
+            return {
+                "title_id": title_id,
+                "chapters": [],
+                "languages": [],
+                "total_translations": 0,
+                "partial": True,
+                "error": f"status:{response.get('code')}",
+            }
+
+        chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        return {
+            "title_id": title_id,
+            "chapters": chapters,
+            "languages": response.get("ALL_LANGUAGES") or [],
+            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+        }
+
+    result = await _dedup_fetch(cache_key, min(CHAPTERS_TTL, 300), _load)
+    if isinstance(result, dict) and result.get("partial"):
+        _CACHE.pop(cache_key, None)
+    elif isinstance(result, dict):
+        _cache_set(full_cache_key, result)
+    return result
 
 
 def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None = None, *, ascending: bool = False) -> list[dict[str, Any]]:
@@ -1798,16 +1929,82 @@ async def _resolve_title_id_for_chapter(chapter: dict[str, Any], title_hint: str
     return ""
 
 
+async def get_title_chapters_snapshot(title_ref: str, lang: str | None = None) -> dict[str, Any]:
+    resolved_lang = lang or PREFERRED_CHAPTER_LANG
+    title_ref = _clean(title_ref)
+    title_id = _extract_title_id(title_ref) or title_ref
+    if not title_id:
+        raise ValueError("Referencia de obra invalida.")
+
+    cached = get_cached_title_bundle(title_id, resolved_lang)
+    if cached is not None and cached.get("chapters"):
+        return cached
+
+    summary = get_cached_title_summary(title_id) or {}
+    chapters_payload = await get_chapter_list_fast(title_id, resolved_lang)
+    chapters = chapters_payload.get("chapters") or []
+    latest = flatten_chapters(chapters_payload, resolved_lang)
+    total_chapters = len(chapters) or _chapter_count_from_summary(summary)
+    title = summary.get("display_title") or summary.get("title") or "Manga"
+    cover_url = summary.get("cover_url") or ""
+
+    bundle = {
+        "title_id": title_id,
+        "title": title,
+        "display_title": title,
+        "cover_url": cover_url,
+        "background_url": summary.get("background_url") or cover_url,
+        "status": summary.get("status") or summary.get("anilist_status") or "carregando",
+        "rating": summary.get("rating") or summary.get("anilist_score") or "",
+        "genres": summary.get("genres") or summary.get("anilist_genres") or [],
+        "chapters": chapters,
+        "languages": chapters_payload.get("languages") or [],
+        "total_chapters": total_chapters,
+        "latest_chapter": latest[0] if latest else summary.get("latest_chapter"),
+        "chapters_partial": bool(chapters_payload.get("partial")) or not bool(chapters),
+        "chapters_error": chapters_payload.get("error") or "",
+        "metadata_partial": True,
+    }
+
+    summary_payload = dict(bundle)
+    if title == "Manga" and not (summary.get("display_title") or summary.get("title")):
+        summary_payload.pop("title", None)
+        summary_payload.pop("display_title", None)
+        summary_payload.pop("status", None)
+    _remember_title_summary(summary_payload)
+    if chapters and not bundle["chapters_partial"]:
+        _cache_set(_title_bundle_cache_key(title_id, resolved_lang), bundle)
+    return bundle
+
+
 async def get_title_bundle(title_ref: str, lang: str | None = None) -> dict[str, Any]:
     resolved_lang = lang or PREFERRED_CHAPTER_LANG
     title_ref = _clean(title_ref)
     title_id = _extract_title_id(title_ref)
-    cache_key = f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
+    cache_key = _title_bundle_cache_key(title_ref, resolved_lang)
+    cached = _cache_get(cache_key, BUNDLE_TTL)
+    if isinstance(cached, dict) and cached.get("metadata_partial"):
+        _CACHE.pop(cache_key, None)
 
     async def _load():
-        details = await get_title_details(title_ref)
+        chapter_task = asyncio.create_task(get_chapter_list(title_id, resolved_lang)) if title_id else None
+        try:
+            details = await get_title_details(title_ref)
+        except Exception:
+            if chapter_task is not None:
+                chapter_task.cancel()
+            raise
+        details_title_id = _extract_title_id(details.get("title_id")) or ""
+
+        if chapter_task is not None and details_title_id == title_id:
+            chapters_source = chapter_task
+        else:
+            if chapter_task is not None:
+                chapter_task.cancel()
+            chapters_source = get_chapter_list(details["title_id"], resolved_lang)
+
         chapters_payload, anilist = await asyncio.gather(
-            get_chapter_list(details["title_id"], resolved_lang),
+            chapters_source,
             enrich_title_metadata(details.get("title") or "", details.get("alt_titles") or []),
         )
         merged = _merge_title_metadata(details, anilist)
@@ -1859,8 +2056,7 @@ def get_cached_title_overview(title_ref: str) -> dict[str, Any] | None:
 def get_cached_title_bundle(title_ref: str, lang: str | None = None) -> dict[str, Any] | None:
     resolved_lang = lang or PREFERRED_CHAPTER_LANG
     title_ref = _clean(title_ref)
-    title_id = _extract_title_id(title_ref)
-    cache_key = f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
+    cache_key = _title_bundle_cache_key(title_ref, resolved_lang)
     cached = _cache_get(cache_key, BUNDLE_TTL)
     if cached is None:
         return None
@@ -2120,6 +2316,7 @@ def prefetch_title_bundles(title_refs: list[str], *, lang: str | None = None, li
         return None
 
     async def _runner():
+        await asyncio.gather(*(get_title_chapters_snapshot(ref, lang) for ref in refs), return_exceptions=True)
         await asyncio.gather(*(get_title_bundle(ref, lang) for ref in refs), return_exceptions=True)
 
     try:
