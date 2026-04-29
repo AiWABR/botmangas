@@ -357,12 +357,17 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
 
 def _offline_text(bundle: dict) -> str:
     title = html.escape(bundle.get("title") or "Manga")
-    chapters = html.escape(str(bundle.get("total_chapters") or "?"))
+    is_partial = bool(bundle.get("chapters_partial"))
+    chapters = html.escape(str(bundle.get("total_chapters") or ("carregando" if is_partial else "?")))
+    footer = "✨ <i>Escolha como quer receber os PDFs.</i>"
+    if is_partial:
+        footer = "⏳ <i>A lista completa ainda está carregando. Você já pode escolher a ordem.</i>"
+
     return (
         f"📥 <b>Ler offline</b>\n\n"
         f"» <b>Obra:</b> <i>{title}</i>\n"
         f"» <b>Capítulos:</b> <i>{chapters}</i>\n\n"
-        "✨ <i>Escolha como quer receber os PDFs.</i>"
+        f"{footer}"
     )
 
 
@@ -818,6 +823,46 @@ async def _auto_finalize_title_panel(
         )
 
 
+async def _auto_finalize_offline_panel(
+    context: ContextTypes.DEFAULT_TYPE,
+    panel_message,
+    title_id: str,
+    user_id: int | None,
+    title_task: asyncio.Task,
+) -> None:
+    if not panel_message:
+        return
+
+    try:
+        bundle = await title_task
+    except Exception as error:
+        print("[OFFLINE_PANEL][REFRESH_FAIL]", title_id, repr(error))
+        return
+
+    if not isinstance(bundle, dict):
+        return
+
+    chat_id = getattr(getattr(panel_message, "chat", None), "id", None)
+    message_id = getattr(panel_message, "message_id", None)
+    if chat_id is None or message_id is None:
+        return
+
+    async with _message_lock(chat_id, message_id):
+        kind, ref = _get_panel_state(chat_id, message_id)
+        bundle_title_id = str(bundle.get("title_id") or title_id).strip()
+        if kind != "offline" or ref != bundle_title_id:
+            return
+
+        await _render_panel_to_message(
+            context,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=_offline_text(bundle),
+            keyboard=_offline_keyboard(bundle),
+            photo=_pick_bundle_image(bundle),
+        )
+
+
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     bundle = await _load_title_panel_bundle(title_id)
 
@@ -859,11 +904,15 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     bundle = get_cached_title_bundle(title_id)
     if bundle is None:
-        bundle = await get_title_bundle(title_id)
+        bundle = _fallback_title_bundle(title_id)
 
     if not can_use_pdf_bulk(user_id):
         await _send_offline_locked(target, bundle, user_id)
         return
+
+    refresh_task = None
+    if bundle.get("chapters_partial") or not bundle.get("chapters"):
+        refresh_task = fire_and_forget(get_title_bundle(title_id))
 
     panel_message = await _render_panel(
         target,
@@ -874,6 +923,8 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
     )
     if panel_message:
         _set_panel_state(panel_message.chat.id, panel_message.message_id, "offline", bundle["title_id"])
+        if refresh_task is not None:
+            fire_and_forget(_auto_finalize_offline_panel(context, panel_message, bundle["title_id"], user_id, refresh_task))
 
 
 async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int):
