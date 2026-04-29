@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, CACHE_CLEANUP_INTERVAL_SECONDS, CACHE_CLEANUP_STARTUP
 from core.epub_queue import start_epub_workers, stop_epub_workers
 from core.http_client import close_http_client
 from core.pdf_queue import start_pdf_workers, stop_pdf_workers
@@ -34,6 +34,7 @@ from handlers.profile import mperfil
 from handlers.search import buscar
 from handlers.start import start
 from services.catalog_client import schedule_warm_catalog_cache, warm_catalog_cache
+from services.cache_cleanup import cleanup_cache_once
 from services.metrics import init_metrics_db
 from services.offline_access import init_offline_access_db
 from services.referral_db import init_referral_db
@@ -55,6 +56,8 @@ async def post_init(app: Application) -> None:
     await start_pdf_workers(app)
     await start_epub_workers(app)
     schedule_warm_catalog_cache()
+    if CACHE_CLEANUP_STARTUP:
+        asyncio.create_task(cleanup_cache_once())
 
 
 async def post_shutdown(app: Application) -> None:
@@ -74,6 +77,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def warm_catalog_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await warm_catalog_cache()
+
+
+async def cache_cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cleanup_cache_once()
 
 
 def _register_jobs(app: Application) -> None:
@@ -98,6 +105,12 @@ def _register_jobs(app: Application) -> None:
         interval=600,
         first=5,
         name="warm_catalog_cache",
+    )
+    app.job_queue.run_repeating(
+        cache_cleanup_job,
+        interval=max(300, CACHE_CLEANUP_INTERVAL_SECONDS),
+        first=120,
+        name="cache_cleanup",
     )
 
 
