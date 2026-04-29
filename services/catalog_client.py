@@ -61,6 +61,7 @@ _HTTP_SEMAPHORE = asyncio.Semaphore(24)
 _CACHE: dict[str, dict[str, Any]] = {}
 _INFLIGHT: dict[str, asyncio.Task] = {}
 _TITLE_URL_CACHE: dict[str, str] = {}
+_TITLE_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
 _CHAPTER_URL_CACHE: dict[str, str] = {}
 _CHAPTER_TITLE_CACHE: dict[str, str] = {}
 _CSRF_TOKEN: dict[str, Any] = {"value": "", "expires_at": 0.0}
@@ -175,6 +176,7 @@ def clear_catalog_cache() -> None:
     _CACHE.clear()
     _INFLIGHT.clear()
     _TITLE_URL_CACHE.clear()
+    _TITLE_SUMMARY_CACHE.clear()
     _CHAPTER_URL_CACHE.clear()
     _CHAPTER_TITLE_CACHE.clear()
     _CSRF_TOKEN["value"] = ""
@@ -523,6 +525,45 @@ def _remember_title_url(title_id: str, url: str) -> None:
     url = _absolute_url(url)
     if title_id and url:
         _TITLE_URL_CACHE[title_id] = url
+
+
+def _remember_title_summary(item: dict[str, Any]) -> None:
+    title_id = _extract_title_id(item.get("title_id")) or _clean(item.get("title_id"))
+    if not title_id:
+        return
+
+    current = _TITLE_SUMMARY_CACHE.get(title_id) or {}
+    merged = dict(current)
+    for key in (
+        "title_id",
+        "title",
+        "display_title",
+        "cover_url",
+        "background_url",
+        "status",
+        "rating",
+        "latest_chapter",
+        "chapter_id",
+        "chapter_url",
+        "language",
+        "url",
+        "updated_at",
+        "adult",
+    ):
+        value = item.get(key)
+        if value not in (None, "", []):
+            merged[key] = value
+
+    merged["title_id"] = title_id
+    _TITLE_SUMMARY_CACHE[title_id] = merged
+
+
+def get_cached_title_summary(title_id: str) -> dict[str, Any] | None:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        return None
+    cached = _TITLE_SUMMARY_CACHE.get(title_id)
+    return dict(cached) if cached else None
 
 
 def _remember_chapter_url(chapter_id: str, url: str) -> None:
@@ -998,6 +1039,7 @@ def _normalize_catalog_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
     _remember_title_url(title_id, url)
+    _remember_title_summary(normalized)
     if chapter_id and chapter_url:
         _remember_chapter_url(chapter_id, chapter_url)
     return normalized
