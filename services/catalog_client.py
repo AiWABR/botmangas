@@ -531,8 +531,25 @@ def _decimal_sort_value(value: Any) -> Decimal:
 def _remember_title_url(title_id: str, url: str) -> None:
     title_id = _clean(title_id)
     url = _absolute_url(url)
-    if title_id and url:
+    if title_id and url and "/title-detail/" in url:
         _TITLE_URL_CACHE[title_id] = url
+
+
+def _restore_summary_indexes(title_id: str, item: dict[str, Any]) -> None:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        return
+
+    url = item.get("url") or item.get("title_url") or ""
+    if url:
+        _remember_title_url(title_id, url)
+
+    chapter_id = item.get("chapter_id") or ""
+    chapter_url = item.get("chapter_url") or ""
+    if chapter_id and chapter_url:
+        _remember_chapter_url(chapter_id, chapter_url)
+    if chapter_id:
+        _remember_chapter_title(chapter_id, title_id)
 
 
 def _load_title_summary_cache_once() -> None:
@@ -557,6 +574,7 @@ def _load_title_summary_cache_once() -> None:
             cached_item = dict(item)
             cached_item["title_id"] = clean_id
             _TITLE_SUMMARY_CACHE[clean_id] = cached_item
+            _restore_summary_indexes(clean_id, cached_item)
 
 
 def _persist_title_summary_cache(*, force: bool = False) -> None:
@@ -586,6 +604,7 @@ def _remember_title_summary(item: dict[str, Any]) -> None:
     title_id = _extract_title_id(item.get("title_id")) or _clean(item.get("title_id"))
     if not title_id:
         return
+    _restore_summary_indexes(title_id, item)
 
     current = _TITLE_SUMMARY_CACHE.get(title_id) or {}
     merged = dict(current)
@@ -623,6 +642,7 @@ def get_cached_title_summary(title_id: str) -> dict[str, Any] | None:
         return None
     cached = _TITLE_SUMMARY_CACHE.get(title_id)
     if cached:
+        _restore_summary_indexes(title_id, cached)
         return dict(cached)
 
     for item in _iter_local_search_seed_candidates(limit=800):
@@ -1635,8 +1655,16 @@ async def _resolve_title_url_from_id(title_id: str) -> str:
         raise ValueError("title_id invalido.")
 
     cached = _TITLE_URL_CACHE.get(title_id)
-    if cached:
+    if cached and "/title-detail/" in cached:
         return cached
+    if cached:
+        _TITLE_URL_CACHE.pop(title_id, None)
+
+    summary = get_cached_title_summary(title_id)
+    summary_url = _absolute_url((summary or {}).get("url") or (summary or {}).get("title_url") or "")
+    if summary_url and "/title-detail/" in summary_url:
+        _remember_title_url(title_id, summary_url)
+        return summary_url
 
     direct_candidate = _absolute_url(f"/title-detail/{title_id}/")
     direct_html = await _try_request_text(direct_candidate)
@@ -1685,6 +1713,7 @@ async def get_title_details(title_ref: str) -> dict[str, Any]:
         if not details.get("title_id") and title_id:
             details["title_id"] = title_id
             _remember_title_url(title_id, url)
+        _remember_title_summary(details)
         return details
 
     return await _dedup_fetch(cache_key, TITLE_TTL, _load)
@@ -1789,6 +1818,7 @@ async def get_title_bundle(title_ref: str, lang: str | None = None) -> dict[str,
         merged["chapters_error"] = chapters_payload.get("error") or ""
         latest = flatten_chapters(chapters_payload, resolved_lang)
         merged["latest_chapter"] = latest[0] if latest else None
+        _remember_title_summary(merged)
         return merged
 
     result = await _dedup_fetch(cache_key, BUNDLE_TTL, _load)
@@ -1810,6 +1840,7 @@ async def get_title_overview(title_ref: str) -> dict[str, Any]:
         merged.setdefault("languages", [])
         merged.setdefault("total_chapters", 0)
         merged.setdefault("latest_chapter", None)
+        _remember_title_summary(merged)
         return merged
 
     return await _dedup_fetch(cache_key, TITLE_TTL, _load)
