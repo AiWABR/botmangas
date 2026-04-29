@@ -27,6 +27,7 @@ from config import (
 )
 from services.catalog_client import (
     flatten_chapters,
+    get_cached_title_summary,
     get_chapter_reader_payload,
     get_home_payload,
     get_recent_chapters,
@@ -286,15 +287,38 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
 
 
 def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
+    summary = get_cached_title_summary(title_id) or {}
+    latest = summary.get("latest_chapter")
+    latest_chapter = None
+    if isinstance(latest, dict):
+        latest_chapter = latest
+    elif summary.get("chapter_id"):
+        latest_chapter = {
+            "chapter_id": summary.get("chapter_id") or "",
+            "chapter_number": str(latest or "").strip(),
+            "chapter_language": summary.get("language") or PREFERRED_CHAPTER_LANG,
+        }
+
+    display_title = (
+        summary.get("display_title")
+        or summary.get("title")
+        or "Manga"
+    )
+    cover_url = summary.get("cover_url") or ""
+
     return _public_title_bundle(
         {
             "title_id": title_id,
-            "title": "Manga",
-            "status": "carregando",
+            "title": display_title,
+            "display_title": display_title,
+            "cover_url": cover_url,
+            "background_url": summary.get("background_url") or cover_url,
+            "status": summary.get("status") or "carregando",
+            "rating": summary.get("rating") or "",
             "chapters": [],
             "languages": [],
             "total_chapters": 0,
-            "latest_chapter": None,
+            "latest_chapter": latest_chapter,
             "chapters_partial": True,
             "chapters_error": error,
         },
