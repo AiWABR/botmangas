@@ -1,70 +1,58 @@
 import html
 from urllib.parse import quote
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
-from config import BOT_USERNAME
-from services.referral_db import referral_ranking, referral_stats
+from config import BOT_USERNAME, WEBAPP_BASE_URL
+from services.affiliate_db import affiliate_summary, cents_to_money
 
 
-def _display_name(row):
-    if row["first_name"]:
-        return row["first_name"]
-    if row["username"]:
-        return f"@{row['username']}"
-    return str(row["user_id"])
+def _affiliate_webapp_url(user_id: int) -> str:
+    base = (WEBAPP_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/affiliate?user_id={int(user_id)}&bot={quote(BOT_USERNAME or '')}"
 
 
 async def _send_panel(message, user_id: int):
-    stats = referral_stats(user_id)
+    summary = affiliate_summary(user_id)
     link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+    app_url = _affiliate_webapp_url(user_id)
+
+    text = (
+        "<b>Programa de Afiliados</b>\n\n"
+        f"Seu nivel: <b>{html.escape(str(summary['tier']))}</b>\n"
+        f"Comissao direta: <b>{summary['direct_percent']}%</b>\n"
+        f"Comissao indireta: <b>{summary['second_level_percent']}%</b>\n\n"
+        f"Saldo disponivel: <b>{cents_to_money(summary['available_cents'])}</b>\n"
+        f"Em garantia: <b>{cents_to_money(summary['pending_cents'])}</b>\n"
+        f"Vendas validas: <b>{summary['valid_sales']}</b>\n\n"
+        "Painel completo:\n"
+        "veja historico, cadastre Pix, solicite saque e acompanhe tudo pelo webapp.\n\n"
+        f"Seu link:\n<code>{html.escape(link)}</code>"
+    )
+
+    rows = []
+    if app_url:
+        rows.append([InlineKeyboardButton("Abrir painel de afiliados", web_app=WebAppInfo(url=app_url))])
 
     telegram_share = (
         "https://t.me/share/url?"
         f"url={quote(link)}"
-        "&text=" + quote("📚 Entra no bot de mangás comigo:")
+        "&text=" + quote("Entra no bot de mangas comigo:")
     )
-    whatsapp_share = "https://wa.me/?text=" + quote(f"📚 Entra no bot de mangás comigo:\n{link}")
+    whatsapp_share = "https://wa.me/?text=" + quote(f"Entra no bot de mangas comigo:\n{link}")
+    rows.append([InlineKeyboardButton("Compartilhar no Telegram", url=telegram_share)])
+    rows.append([InlineKeyboardButton("Compartilhar no WhatsApp", url=whatsapp_share)])
 
-    ranking = referral_ranking(3)
-    medals = ["🥇", "🥈", "🥉"]
-    ranking_text = ""
-
-    if ranking:
-        ranking_text += "\n🏆 <b>Ranking mensal</b>\n\n"
-        for index, row in enumerate(ranking):
-            ranking_text += f"{medals[index]} {html.escape(_display_name(row))} - <code>{row['total']}</code>\n"
-
-    text = (
-        "🎁 <b>Sistema de convites</b>\n\n"
-        "Convide amigos para usar o bot e subir no ranking.\n\n"
-        "📊 <b>Suas estatísticas</b>\n\n"
-        f"👉 Cliques no seu link: <code>{stats['clicks']}</code>\n"
-        f"📨 Registradas: <code>{stats['total']}</code>\n"
-        f"⏳ Em análise: <code>{stats['pending']}</code>\n"
-        f"✅ Aprovadas: <code>{stats['qualified']}</code>\n\n"
-        "🔗 <b>Seu link</b>\n"
-        f"<code>{link}</code>\n\n"
-        "🛡 <b>Regras</b>\n"
-        "• Autoindicação não conta\n"
-        "• Só a primeira indicação é válida\n"
-        "• O usuário precisa continuar no canal\n"
-        "• Precisa usar o bot por alguns dias\n"
-        f"{ranking_text}"
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📨 Compartilhar no Telegram", url=telegram_share)],
-            [InlineKeyboardButton("📦 Compartilhar no WhatsApp", url=whatsapp_share)],
-        ]
-    )
+    if not app_url:
+        text += "\n\nConfigure WEBAPP_BASE_URL para ativar o botao do painel."
 
     await message.reply_text(
         text,
         parse_mode="HTML",
-        reply_markup=keyboard,
+        reply_markup=InlineKeyboardMarkup(rows),
         disable_web_page_preview=True,
     )
 
