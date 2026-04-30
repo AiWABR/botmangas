@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from config import (
+    ADMIN_IDS,
     BASE_DIR,
     BOT_BRAND,
     BOT_TOKEN,
@@ -45,6 +46,24 @@ from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
+from services.affiliate_db import (
+    admin_list_withdrawals,
+    admin_overview,
+    admin_user_snapshot,
+    affiliate_summary,
+    cents_to_money,
+    get_profile,
+    get_settings,
+    init_affiliate_db,
+    list_commissions,
+    list_withdrawals,
+    pay_withdrawal,
+    refuse_withdrawal,
+    release_due_commissions,
+    request_withdrawal,
+    set_pix_key,
+    update_setting,
+)
 from services.profile_store import (
     list_user_favorites,
     merge_user_favorites,
@@ -53,6 +72,7 @@ from services.profile_store import (
 )
 
 MINIAPP_DIR = BASE_DIR / "miniapp"
+AFFILIATE_APP_DIR = MINIAPP_DIR / "affiliate"
 PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
 
 app = FastAPI(
@@ -70,6 +90,7 @@ app.add_middleware(
 )
 
 init_offline_access_db()
+init_affiliate_db()
 
 
 @app.on_event("startup")
@@ -123,6 +144,26 @@ class FavoritePayload(BaseModel):
 class FavoritesSyncPayload(BaseModel):
     user_id: str = Field(min_length=1)
     favorites: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AffiliatePixPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    pix_key: str = Field(min_length=3, max_length=180)
+
+
+class AffiliateUserPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+
+
+class AffiliateAdminActionPayload(BaseModel):
+    admin_user_id: str = Field(min_length=1)
+    note: str = ""
+
+
+class AffiliateSettingPayload(BaseModel):
+    admin_user_id: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1, max_length=80)
 
 
 _CACHE: dict[str, dict[str, Any]] = {}
@@ -692,6 +733,26 @@ def _cakto_secret_is_valid(request: Request, payload: dict[str, Any]) -> bool:
     return expected in _cakto_secret_candidates(request, payload)
 
 
+def _is_admin_user(user_id: str | int | None) -> bool:
+    try:
+        return int(user_id or 0) in set(ADMIN_IDS)
+    except Exception:
+        return False
+
+
+def _admin_required(user_id: str | int | None) -> None:
+    if not _is_admin_user(user_id):
+        raise HTTPException(status_code=403, detail="Acesso admin negado.")
+
+
+def _money_fields(item: dict[str, Any]) -> dict[str, Any]:
+    result = dict(item)
+    for key in ("amount_cents", "commission_amount_cents", "sale_amount_cents", "available_cents", "pending_cents", "paid_cents", "withdrawal_pending_cents", "canceled_cents"):
+        if key in result:
+            result[key.replace("_cents", "") + "_formatted"] = cents_to_money(result.get(key))
+    return result
+
+
 async def _notify_cakto_user(result: dict[str, Any]) -> None:
     if not CAKTO_NOTIFY_USERS or not BOT_TOKEN:
         return
@@ -774,6 +835,116 @@ async def api_cakto_webhook(request: Request):
         asyncio.create_task(_notify_cakto_user(result))
 
     return result
+
+
+@app.get("/affiliate")
+async def affiliate_root():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
+@app.get("/affiliate/")
+async def affiliate_root_slash():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
+@app.get("/api/affiliate/summary")
+async def api_affiliate_summary(user_id: str = Query(...)):
+    summary = affiliate_summary(user_id)
+    summary["available_formatted"] = cents_to_money(summary.get("available_cents"))
+    summary["pending_formatted"] = cents_to_money(summary.get("pending_cents"))
+    summary["paid_formatted"] = cents_to_money(summary.get("paid_cents"))
+    summary["withdrawal_pending_formatted"] = cents_to_money(summary.get("withdrawal_pending_cents"))
+    summary["canceled_formatted"] = cents_to_money(summary.get("canceled_cents"))
+    summary["is_admin"] = _is_admin_user(user_id)
+    return summary
+
+
+@app.get("/api/affiliate/commissions")
+async def api_affiliate_commissions(user_id: str = Query(...), limit: int = Query(60, ge=1, le=200)):
+    return {"items": [_money_fields(item) for item in list_commissions(user_id, limit=limit)]}
+
+
+@app.get("/api/affiliate/withdrawals")
+async def api_affiliate_withdrawals(user_id: str = Query(...), limit: int = Query(40, ge=1, le=200)):
+    return {"items": [_money_fields(item) for item in list_withdrawals(user_id, limit=limit)]}
+
+
+@app.post("/api/affiliate/pix")
+async def api_affiliate_pix(payload: AffiliatePixPayload):
+    return {"ok": True, "profile": set_pix_key(payload.user_id, payload.pix_key)}
+
+
+@app.post("/api/affiliate/withdrawals")
+async def api_affiliate_request_withdrawal(payload: AffiliateUserPayload):
+    try:
+        withdrawal = request_withdrawal(payload.user_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"ok": True, "withdrawal": _money_fields(withdrawal)}
+
+
+@app.post("/api/affiliate/release")
+async def api_affiliate_release(payload: AffiliateAdminActionPayload):
+    _admin_required(payload.admin_user_id)
+    return {"ok": True, "released": release_due_commissions()}
+
+
+@app.get("/api/affiliate/admin/overview")
+async def api_affiliate_admin_overview(admin_user_id: str = Query(...)):
+    _admin_required(admin_user_id)
+    return admin_overview()
+
+
+@app.get("/api/affiliate/admin/withdrawals")
+async def api_affiliate_admin_withdrawals(
+    admin_user_id: str = Query(...),
+    status: str = Query("pending"),
+    limit: int = Query(100, ge=1, le=300),
+):
+    _admin_required(admin_user_id)
+    return {"items": [_money_fields(item) for item in admin_list_withdrawals(status=status, limit=limit)]}
+
+
+@app.get("/api/affiliate/admin/user/{user_id}")
+async def api_affiliate_admin_user(user_id: str, admin_user_id: str = Query(...)):
+    _admin_required(admin_user_id)
+    return admin_user_snapshot(user_id)
+
+
+@app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/pay")
+async def api_affiliate_admin_pay_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    _admin_required(payload.admin_user_id)
+    try:
+        withdrawal = pay_withdrawal(withdrawal_id, payload.admin_user_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"ok": True, "withdrawal": _money_fields(withdrawal)}
+
+
+@app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/refuse")
+async def api_affiliate_admin_refuse_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    _admin_required(payload.admin_user_id)
+    try:
+        withdrawal = refuse_withdrawal(withdrawal_id, payload.note)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"ok": True, "withdrawal": _money_fields(withdrawal)}
+
+
+@app.get("/api/affiliate/settings")
+async def api_affiliate_settings(admin_user_id: str = Query(...)):
+    _admin_required(admin_user_id)
+    return {"settings": get_settings()}
+
+
+@app.post("/api/affiliate/settings")
+async def api_affiliate_update_setting(payload: AffiliateSettingPayload):
+    _admin_required(payload.admin_user_id)
+    try:
+        update_setting(payload.key, payload.value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"ok": True, "settings": get_settings()}
 
 
 @app.get("/api/home")
