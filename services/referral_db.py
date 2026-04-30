@@ -340,6 +340,22 @@ def get_referrer_chain(user_id, max_depth=2):
     return chain
 
 
+def get_referral_user(user_id):
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT user_id, username, first_name, created_at, last_seen_at
+            FROM users
+            WHERE user_id = ?
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
 def referral_ranking(limit=3):
     with _connect() as conn:
         cur = conn.cursor()
