@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1771,10 +1772,16 @@ function buildMetaPills(bundle, chapters = []) {
   const pills = [];
   const status = bundle?.status || bundle?.anilist_status;
   const score = bundle?.anilist_score || bundle?.rating;
-  const total = bundle?.total_chapters || bundle?.anilist_chapters || chapters.length || 0;
+  const total = chapters.length || bundle?.source_total_chapters || bundle?.total_chapters || 0;
   if (status) pills.push(`<span class="tag-pill">${esc(status)}</span>`);
   if (score) pills.push(`<span class="tag-pill score">⭐ ${esc(score)}</span>`);
-  pills.push(`<span class="tag-pill">📚 ${esc(total)} caps</span>`);
+  if (total > 0) {
+    pills.push(`<span class="tag-pill">📚 ${esc(total)} caps</span>`);
+  } else if (bundle?.chapters_partial) {
+    pills.push(`<span class="tag-pill">⌛ carregando caps</span>`);
+  } else {
+    pills.push(`<span class="tag-pill">📚 sem caps no acervo</span>`);
+  }
   return pills.join("");
 }
 
