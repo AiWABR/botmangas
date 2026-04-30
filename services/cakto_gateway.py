@@ -20,6 +20,7 @@ from services.offline_access import (
     plan_label,
     revoke_offline_access,
 )
+from services.affiliate_db import cancel_commissions_for_sale, create_commissions_for_sale, plan_price_cents
 
 APPROVAL_EVENTS = {
     "purchase_approved",
@@ -417,7 +418,8 @@ def process_cakto_webhook(payload: dict[str, Any]) -> dict[str, Any]:
             reason="cakto",
             payload=payload,
         )
-        return {**base, "action": "revoked", "access": access}
+        canceled_commissions = cancel_commissions_for_sale(buyer_user_id=user_id)
+        return {**base, "action": "revoked", "access": access, "canceled_commissions": canceled_commissions}
 
     if _is_approval_event(event_type, status):
         if not user_id:
@@ -433,6 +435,14 @@ def process_cakto_webhook(payload: dict[str, Any]) -> dict[str, Any]:
             source="cakto",
             payload=payload,
         )
-        return {**base, "action": "granted", "access": access}
+        commissions = []
+        if not access.get("duplicate_event"):
+            commissions = create_commissions_for_sale(
+                user_id,
+                plan,
+                event_id=event_id,
+                sale_amount_cents=plan_price_cents(plan),
+            )
+        return {**base, "action": "granted", "access": access, "commissions": commissions}
 
     return {**base, "action": "ignored", "reason": "event_not_handled"}
