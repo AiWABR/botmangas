@@ -1102,6 +1102,7 @@
     }
 
     function shareLink() {
+      const previewUrl = `${location.origin}/affiliate/share/${encodeURIComponent(userId)}`;
       const text = [
         "<b>📚🔥 MANGÁ OFFLINE CHEGOU NO BALTIGO</b>",
         "",
@@ -1152,7 +1153,7 @@
         "<b>⚡ Isso não é só um bot.</b>",
         "É liberdade pra ler onde quiser.",
         "",
-        "**🔥 Acesse agora:***",
+        "**🔥 Acesse agora:**",
         `👉 ${refLink()}`,
       ].join("\n");
       if (tg?.openTelegramLink) {
