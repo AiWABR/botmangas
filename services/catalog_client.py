@@ -930,6 +930,8 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
     followers = ""
     views = ""
     comments = ""
+    source_total_chapters = None
+    source_total_translations = None
 
     primary_genres: list[str] = []
     for line in title_window[:12]:
@@ -947,6 +949,18 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
         normalized = line.lower()
         if normalized.startswith("published:"):
             published = _clean(line.split(":", 1)[1])
+            chapter_count_match = re.search(r"\b(\d+)\s+chapters?\b", line, flags=re.IGNORECASE)
+            if chapter_count_match:
+                source_total_chapters = int(chapter_count_match.group(1))
+            continue
+        chapter_summary_match = re.search(
+            r"\b(\d+)\s+chapters?\s+with\s+(\d+)\s+translations?\b",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if chapter_summary_match:
+            source_total_chapters = int(chapter_summary_match.group(1))
+            source_total_translations = int(chapter_summary_match.group(2))
             continue
         if normalized in KNOWN_STATUSES:
             status = line
@@ -1011,6 +1025,8 @@ def _parse_title_detail_html(html_text: str, requested_url: str) -> dict[str, An
         "followers": followers,
         "views": views,
         "comments": comments,
+        "source_total_chapters": source_total_chapters,
+        "source_total_translations": source_total_translations,
         "genres": genres,
         "authors": authors,
         "published": published,
@@ -2010,8 +2026,12 @@ async def get_title_bundle(title_ref: str, lang: str | None = None) -> dict[str,
         merged = _merge_title_metadata(details, anilist)
         merged["chapters"] = chapters_payload["chapters"]
         merged["languages"] = chapters_payload["languages"]
+        source_total_chapters = details.get("source_total_chapters")
+        merged["source_total_chapters"] = source_total_chapters
         merged["total_chapters"] = len(chapters_payload["chapters"])
         merged["chapters_partial"] = bool(chapters_payload.get("partial"))
+        if not merged["chapters"] and source_total_chapters == 0:
+            merged["chapters_partial"] = False
         merged["chapters_error"] = chapters_payload.get("error") or ""
         latest = flatten_chapters(chapters_payload, resolved_lang)
         merged["latest_chapter"] = latest[0] if latest else None
