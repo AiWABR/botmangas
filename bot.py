@@ -38,11 +38,13 @@ from services.cache_cleanup import cleanup_cache_once
 from services.metrics import init_metrics_db
 from services.offline_access import init_offline_access_db
 from services.referral_db import init_referral_db
+from services.affiliate_db import init_affiliate_db, release_due_commissions
 from handlers.postmanga import postmanga, postallmangas
 
 init_metrics_db()
 init_referral_db()
 init_offline_access_db()
+init_affiliate_db()
 
 MAX_CONCURRENT_UPDATES = 128
 BOT_API_CONNECTION_POOL = 64
@@ -83,6 +85,13 @@ async def cache_cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     await cleanup_cache_once()
 
 
+async def affiliate_release_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        release_due_commissions()
+    except Exception as error:
+        print("ERRO AFFILIATE RELEASE:", repr(error))
+
+
 def _register_jobs(app: Application) -> None:
     if not app.job_queue:
         print("JobQueue nao disponivel. Instale python-telegram-bot[job-queue]==22.6")
@@ -111,6 +120,12 @@ def _register_jobs(app: Application) -> None:
         interval=max(300, CACHE_CLEANUP_INTERVAL_SECONDS),
         first=120,
         name="cache_cleanup",
+    )
+    app.job_queue.run_repeating(
+        affiliate_release_job,
+        interval=1800,
+        first=90,
+        name="affiliate_release",
     )
 
 
