@@ -22,8 +22,6 @@ from config import (
     BOT_TOKEN,
     CAKTO_NOTIFY_USERS,
     CAKTO_WEBHOOK_SECRET,
-    CACHE_CLEANUP_INTERVAL_SECONDS,
-    CACHE_CLEANUP_STARTUP,
     DATA_DIR,
     HOME_SECTION_LIMIT,
     PREFERRED_CHAPTER_LANG,
@@ -41,7 +39,6 @@ from services.catalog_client import (
     search_titles,
 )
 from services.cakto_gateway import extract_webhook_secret_values, process_cakto_webhook
-from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_loop
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
@@ -70,17 +67,6 @@ app.add_middleware(
 )
 
 init_offline_access_db()
-
-
-@app.on_event("startup")
-async def _startup_cache_cleanup() -> None:
-    first_delay = 0 if CACHE_CLEANUP_STARTUP else CACHE_CLEANUP_INTERVAL_SECONDS
-    start_cache_cleanup_loop(first_delay=first_delay)
-
-
-@app.on_event("shutdown")
-async def _shutdown_cache_cleanup() -> None:
-    await stop_cache_cleanup_loop()
 
 
 class ProgressPayload(BaseModel):
