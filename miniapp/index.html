@@ -1666,10 +1666,21 @@ function openProfilePage() {
       <span class="profile-row-label">Armazenamento</span>
       <span class="profile-row-value">Local</span>
     </div>
+    <div style="padding-top:14px">
+      <button class="btn btn-primary" id="affiliateGatewayBtn" style="width:100%">Painel de afiliados</button>
+    </div>
   `;
+
+  const affiliateBtn = $$("affiliateGatewayBtn");
+  if (affiliateBtn) affiliateBtn.onclick = openAffiliateGateway;
 
   setPage("profilePage");
   syncUrl({ route: "profile" });
+}
+
+function openAffiliateGateway() {
+  const url = `/affiliate${state.userId ? `?user_id=${encodeURIComponent(state.userId)}&bot=${encodeURIComponent("MangasBaltigo_Bot")}` : ""}`;
+  window.location.href = url;
 }
 
 // ══════════════════════════════════════════
