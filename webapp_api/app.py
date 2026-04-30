@@ -856,6 +856,41 @@ async def affiliate_root_slash():
     return FileResponse(AFFILIATE_APP_DIR / "index.html")
 
 
+@app.get("/affiliate/share/{user_id}")
+async def affiliate_share_preview(user_id: int):
+    bot_username = "MangasBaltigo_Bot"
+    ref_url = f"https://t.me/{bot_username}?start=ref_{int(user_id)}"
+    image_url = (
+        "https://photo.chelpbot.me/AgACAgEAAxkBZ7DGAAFpse3x62wh4yTxu0BIhIPz12L_YwACMAxrGxpikUXp6-kJkxw_1QEAAwIAA3kAAzoE/photo.jpg"
+    )
+    html_body = f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Baltigo - Mangas no Telegram</title>
+  <meta property="og:title" content="Baltigo - Mangas direto no Telegram">
+  <meta property="og:description" content="Leia mangas, acompanhe capitulos e libere recursos offline pelo bot Baltigo.">
+  <meta property="og:image" content="{image_url}">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta http-equiv="refresh" content="0; url={ref_url}">
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#080b12; color:#fff; font-family:system-ui,sans-serif; }}
+    a {{ color:#93c5fd; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Baltigo</h1>
+    <p>Redirecionando para o bot...</p>
+    <a href="{ref_url}">Abrir agora</a>
+  </main>
+</body>
+</html>"""
+    return Response(content=html_body, media_type="text/html")
+
+
 @app.get("/api/affiliate/summary")
 async def api_affiliate_summary(user_id: str = Query(...)):
     summary = affiliate_summary(user_id)
