@@ -47,10 +47,6 @@ def _profile_keyboard() -> InlineKeyboardMarkup | None:
         [
             [
                 InlineKeyboardButton(
-                    "Acompanhando",
-                    web_app=WebAppInfo(url=history_url),
-                ),
-                InlineKeyboardButton(
                     "Favoritos",
                     web_app=WebAppInfo(url=favorites_url),
                 ),
