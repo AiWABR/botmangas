@@ -143,6 +143,7 @@
       box-shadow: var(--shadow);
       backdrop-filter: blur(24px);
     }
+    .mobile-nav.no-admin { grid-template-columns: repeat(4, 1fr); }
     .mobile-nav .nav-btn { min-height: 56px; justify-content: center; padding: 0; border-radius: 18px; flex-direction: column; gap: 3px; font-size: 10px; }
     .mobile-nav .nav-btn span:last-child { display: block; }
     .mobile-nav .nav-ico { width: 22px; height: 22px; }
@@ -501,7 +502,7 @@
         <nav class="nav" id="desktopNav">
           <button class="nav-btn active" data-view="dashboard"><span class="nav-ico" data-icon="dashboard"></span><span>Dashboard</span></button>
           <button class="nav-btn" data-view="affiliate"><span class="nav-ico" data-icon="affiliate"></span><span>Afiliado</span></button>
-          <button class="nav-btn" data-view="commissions"><span class="nav-ico" data-icon="commissions"></span><span>Comissoes</span></button>
+          <button class="nav-btn" data-view="commissions"><span class="nav-ico" data-icon="commissions"></span><span>Comissões</span></button>
           <button class="nav-btn" data-view="withdrawals"><span class="nav-ico" data-icon="withdrawals"></span><span>Saques</span></button>
           <button class="nav-btn hidden" data-view="admin" id="adminNav"><span class="nav-ico" data-icon="admin"></span><span>Admin</span></button>
         </nav>
@@ -517,7 +518,7 @@
             <div>
               <span class="eyebrow">Visao geral</span>
               <h1 class="page-title" id="helloTitle">Seu gateway de afiliados</h1>
-              <p class="page-copy">Acompanhe sua operacao de indicacoes, comissoes, vendas e saques em uma central unica.</p>
+              <p class="page-copy">Acompanhe sua operação de indicações, comissões, vendas e saques em uma central única.</p>
             </div>
             <span class="pill blue" id="tierPill">Bronze</span>
           </div>
@@ -534,7 +535,7 @@
             </div>
             <div class="hero-side">
               <div class="balance-box">
-                <div class="balance-label">Saldo disponivel</div>
+              <div class="balance-label">Saldo disponível</div>
                 <div class="balance-value" id="availableHero">R$ 0,00</div>
                 <div class="tiny" id="withdrawHint">Cadastre Pix e atinja o minimo de vendas para sacar.</div>
               </div>
@@ -585,7 +586,7 @@
 
         <section class="page" id="commissionsPage">
           <div class="topline">
-            <div><span class="eyebrow">Financeiro</span><h1 class="page-title">Comissoes</h1><p class="page-copy">Cada comissao passa por garantia de 7 dias antes de ficar disponivel para saque.</p></div>
+            <div><span class="eyebrow">Financeiro</span><h1 class="page-title">Comissões</h1><p class="page-copy">Cada comissão passa por garantia de 7 dias antes de ficar disponível para saque.</p></div>
           </div>
           <div class="grid-3" id="commissionStatusCards"></div>
           <article class="card card-pad" style="margin-top:14px">
@@ -652,7 +653,7 @@
   <nav class="mobile-nav" id="mobileNav">
     <button class="nav-btn active" data-view="dashboard"><span class="nav-ico" data-icon="dashboard"></span><span>Inicio</span></button>
     <button class="nav-btn" data-view="affiliate"><span class="nav-ico" data-icon="affiliate"></span><span>Link</span></button>
-    <button class="nav-btn" data-view="commissions"><span class="nav-ico" data-icon="commissions"></span><span>Comissao</span></button>
+          <button class="nav-btn" data-view="commissions"><span class="nav-ico" data-icon="commissions"></span><span>Comissão</span></button>
     <button class="nav-btn" data-view="withdrawals"><span class="nav-ico" data-icon="withdrawals"></span><span>Saque</span></button>
     <button class="nav-btn hidden" data-view="admin" id="adminNavMobile"><span class="nav-ico" data-icon="admin"></span><span>Admin</span></button>
   </nav>
@@ -738,7 +739,7 @@
     function statusLabel(value) {
       return ({
         pending_guarantee: "Em garantia",
-        available: "Disponivel",
+        available: "Disponível",
         withdrawal_pending: "Saque pendente",
         paid: "Pago",
         canceled: "Cancelado",
@@ -849,6 +850,7 @@
       $("levelBar").style.width = `${next.percent}%`;
       $("adminNav").classList.toggle("hidden", !s.is_admin);
       $("adminNavMobile").classList.toggle("hidden", !s.is_admin);
+      $("mobileNav").classList.toggle("no-admin", !s.is_admin);
       $("withdrawBtn").disabled = !s.can_withdraw;
       $("withdrawBtn2").disabled = !s.can_withdraw;
       $("pixInput").value = s.profile?.pix_key || "";
@@ -868,9 +870,9 @@
     function renderKpis() {
       const s = state.summary;
       const kpis = [
-        ["Saldo disponivel", money(s.available_cents), "Liberado para saque", "green", icons.money],
-        ["Em garantia", money(s.pending_cents), "Libera apos 7 dias", "amber", icons.clock],
-        ["Vendas validas", s.valid_sales, `${s.min_withdraw_sales} vendas minimas`, "", icons.trend],
+        ["Saldo disponível", money(s.available_cents), "Liberado para saque", "green", icons.money],
+        ["Em garantia", money(s.pending_cents), "Libera após 7 dias", "amber", icons.clock],
+        ["Vendas válidas", s.valid_sales, `${s.min_withdraw_sales} vendas mínimas`, "", icons.trend],
         ["Cliques no link", s.referral.clicks, "Estimativa do funil", "", icons.link],
         ["Conversao", conversionRate(), "Vendas por clique", "", icons.users],
         ["Saques pagos", money(s.paid_cents), "Historico recebido", "green", icons.check],
@@ -917,7 +919,7 @@
       $("affiliateMetrics").innerHTML = [
         ["Cliques", s.referral.clicks, "Pessoas que abriram seu link"],
         ["Cadastros", s.referral.registered, "Entraram pelo seu link"],
-        ["Conversao", conversionRate(), "Cliques que viraram venda"],
+        ["Conversão", conversionRate(), "Cliques que viraram venda"],
       ].map(([label, value, hint]) => `<article class="card kpi"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-hint">${hint}</div></article>`).join("");
     }
 
@@ -954,11 +956,11 @@
       const totals = { pending_guarantee: 0, available: 0, paid: 0, canceled: 0 };
       for (const item of state.commissions) if (item.status in totals) totals[item.status] += Number(item.commission_amount_cents || 0);
       $("commissionStatusCards").innerHTML = [
-        ["Em garantia", totals.pending_guarantee, "Libera apos 7 dias", "amber"],
-        ["Disponivel", totals.available, "Pode entrar no proximo saque", "green"],
-        ["Pago", totals.paid, "Ja enviado via Pix", "green"],
+        ["Em garantia", totals.pending_guarantee, "Libera após 7 dias", "amber"],
+        ["Disponível", totals.available, "Pode entrar no próximo saque", "green"],
+        ["Pago", totals.paid, "Já enviado via Pix", "green"],
       ].map(([label, value, hint, tone]) => `<article class="card kpi ${tone}"><div class="kpi-label">${label}</div><div class="kpi-value">${money(value)}</div><div class="kpi-hint">${hint}</div></article>`).join("");
-      const filters = [["all", "Tudo"], ["pending_guarantee", "Garantia"], ["available", "Disponivel"], ["paid", "Pago"], ["canceled", "Cancelado"]];
+      const filters = [["all", "Tudo"], ["pending_guarantee", "Garantia"], ["available", "Disponível"], ["paid", "Pago"], ["canceled", "Cancelado"]];
       $("commissionFilters").innerHTML = filters.map(([value, label]) => `<button class="chip ${state.commissionFilter === value ? "active" : ""}" data-filter="${value}">${label}</button>`).join("");
       const items = state.commissionFilter === "all" ? state.commissions : state.commissions.filter(item => item.status === state.commissionFilter);
       $("commissionsList").innerHTML = items.length ? items.map(item => `
@@ -1102,13 +1104,57 @@
     function shareLink() {
       const previewUrl = `${location.origin}/affiliate/share/${encodeURIComponent(userId)}`;
       const text = [
-        "🔥 BALTIGO MANGÁS",
+        "<b>📚🔥 MANGÁ OFFLINE CHEGOU NO BALTIGO</b>",
         "",
-        "📚 Leia mangás direto pelo Telegram",
-        "⚡ Acesso rápido, capítulos organizados e leitura offline",
-        "💎 Entre pelo meu link personalizado:",
+        "Agora o @MangasBaltigo_Bot ficou ainda mais absurdo.",
         "",
-        refLink(),
+        "Você pode baixar e ler seus mangás <b>OFFLINE</b>, quando quiser, onde quiser.",
+        "",
+        "<i>Sem internet. Sem travar. Sem depender de site abrindo.</i>",
+        "",
+        "⸻",
+        "",
+        "<b>📖 Um acervo gigante no seu bolso:</b>",
+        "",
+        "🔥 Mais de <b>140 MIL mangás</b>",
+        "⚔️ Mais de <b>12.439 manhwa</b>",
+        "🐉 Mais de <b>6.218 manhua</b>",
+        "📚 Mais de <b>695 MIL capítulos disponíveis</b>",
+        "",
+        "⸻",
+        "",
+        "<b>🔎 Pra usar é simples:</b>",
+        "",
+        "Digite <b>/buscar</b> + o nome da obra que você quer.",
+        "",
+        "Exemplo:",
+        "<i>/buscar Solo Leveling</i>",
+        "",
+        "Depois é só escolher, baixar e ler.",
+        "",
+        "⸻",
+        "",
+        "<b>💡 Na prática:</b>",
+        "",
+        "🚌 <b>Sem sinal no ônibus?</b>",
+        "<i>Você continua de onde parou.</i>",
+        "",
+        "📶 <b>Internet ruim ou acabando?</b>",
+        "<i>O capítulo já tá salvo com você.</i>",
+        "",
+        "✈️ <b>Viagem longa?</b>",
+        "<i>Só abrir e maratonar.</i>",
+        "",
+        "📱 <b>Quer ler em outro app ou no Kindle?</b>",
+        "<i>Também tem opção em EPUB.</i>",
+        "",
+        "⸻",
+        "",
+        "<b>⚡ Isso não é só um bot.</b>",
+        "É liberdade pra ler onde quiser.",
+        "",
+        "<b>🔥 Acesse agora:</b>",
+        `👉 ${refLink()}`,
       ].join("\n");
       if (tg?.openTelegramLink) {
         tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(previewUrl)}&text=${encodeURIComponent(text)}`);
