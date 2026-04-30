@@ -1102,66 +1102,65 @@
     }
 
     function shareLink() {
-      const previewUrl = `${location.origin}/affiliate/share/${encodeURIComponent(userId)}`;
       const text = [
-        "<b>📚🔥 MANGÁ OFFLINE CHEGOU NO BALTIGO</b>",
+        "📚🔥 MANGÁ OFFLINE CHEGOU NO BALTIGO",
         "",
         "Agora o @MangasBaltigo_Bot ficou ainda mais absurdo.",
         "",
-        "Você pode baixar e ler seus mangás <b>OFFLINE</b>, quando quiser, onde quiser.",
+        "Você pode baixar e ler seus mangás OFFLINE, quando quiser, onde quiser.",
         "",
-        "<i>Sem internet. Sem travar. Sem depender de site abrindo.</i>",
-        "",
-        "⸻",
-        "",
-        "<b>📖 Um acervo gigante no seu bolso:</b>",
-        "",
-        "🔥 Mais de <b>140 MIL mangás</b>",
-        "⚔️ Mais de <b>12.439 manhwa</b>",
-        "🐉 Mais de <b>6.218 manhua</b>",
-        "📚 Mais de <b>695 MIL capítulos disponíveis</b>",
+        "Sem internet. Sem travar. Sem depender de site abrindo.",
         "",
         "⸻",
         "",
-        "<b>🔎 Pra usar é simples:</b>",
+        "📖 Um acervo gigante no seu bolso:",
         "",
-        "Digite <b>/buscar</b> + o nome da obra que você quer.",
+        "🔥 Mais de 140 MIL mangás",
+        "⚔️ Mais de 12.439 manhwa",
+        "🐉 Mais de 6.218 manhua",
+        "📚 Mais de 695 MIL capítulos disponíveis",
+        "",
+        "⸻",
+        "",
+        "🔎 Pra usar é simples:",
+        "",
+        "Digite /buscar + o nome da obra que você quer.",
         "",
         "Exemplo:",
-        "<i>/buscar Solo Leveling</i>",
+        "/buscar Solo Leveling",
         "",
         "Depois é só escolher, baixar e ler.",
         "",
         "⸻",
         "",
-        "<b>💡 Na prática:</b>",
+        "💡 Na prática:",
         "",
-        "🚌 <b>Sem sinal no ônibus?</b>",
-        "<i>Você continua de onde parou.</i>",
+        "🚌 Sem sinal no ônibus?",
+        "Você continua de onde parou.",
         "",
-        "📶 <b>Internet ruim ou acabando?</b>",
-        "<i>O capítulo já tá salvo com você.</i>",
+        "📶 Internet ruim ou acabando?",
+        "O capítulo já tá salvo com você.",
         "",
-        "✈️ <b>Viagem longa?</b>",
-        "<i>Só abrir e maratonar.</i>",
+        "✈️ Viagem longa?",
+        "Só abrir e maratonar.",
         "",
-        "📱 <b>Quer ler em outro app ou no Kindle?</b>",
-        "<i>Também tem opção em EPUB.</i>",
+        "📱 Quer ler em outro app ou no Kindle?",
+        "Também tem opção em EPUB.",
         "",
         "⸻",
         "",
-        "<b>⚡ Isso não é só um bot.</b>",
+        "⚡ Isso não é só um bot.",
         "É liberdade pra ler onde quiser.",
         "",
-        "<b>🔥 Acesse agora:</b>",
+        "🔥 Acesse agora:",
         `👉 ${refLink()}`,
       ].join("\n");
       if (tg?.openTelegramLink) {
-        tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(previewUrl)}&text=${encodeURIComponent(text)}`);
+        tg.openTelegramLink(`https://t.me/share/url?text=${encodeURIComponent(text)}`);
       } else if (navigator.share) {
-        navigator.share({ title: "Baltigo Mangás", text, url: previewUrl }).catch(() => copyText(`${text}\n${previewUrl}`));
+        navigator.share({ title: "Baltigo Mangás", text }).catch(() => copyText(text));
       } else {
-        copyText(`${text}\n${previewUrl}`);
+        copyText(text);
       }
     }
 
