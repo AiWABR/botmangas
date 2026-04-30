@@ -48,10 +48,12 @@ from services.metrics import get_last_read_entry, get_recently_read, mark_chapte
 from services.offline_access import init_offline_access_db
 from services.affiliate_db import (
     admin_list_withdrawals,
+    admin_list_affiliates,
     admin_overview,
     admin_user_snapshot,
     affiliate_summary,
     cents_to_money,
+    complete_affiliate_account,
     get_profile,
     get_settings,
     init_affiliate_db,
@@ -153,6 +155,13 @@ class AffiliatePixPayload(BaseModel):
 
 class AffiliateUserPayload(BaseModel):
     user_id: str = Field(min_length=1)
+
+
+class AffiliateAccountPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    full_name: str = Field(min_length=3, max_length=160)
+    email: str = Field(min_length=5, max_length=180)
+    phone: str = Field(min_length=8, max_length=80)
 
 
 class AffiliateAdminActionPayload(BaseModel):
@@ -874,6 +883,15 @@ async def api_affiliate_pix(payload: AffiliatePixPayload):
     return {"ok": True, "profile": set_pix_key(payload.user_id, payload.pix_key)}
 
 
+@app.post("/api/affiliate/account")
+async def api_affiliate_account(payload: AffiliateAccountPayload):
+    try:
+        profile = complete_affiliate_account(payload.user_id, payload.full_name, payload.email, payload.phone)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"ok": True, "profile": profile}
+
+
 @app.post("/api/affiliate/withdrawals")
 async def api_affiliate_request_withdrawal(payload: AffiliateUserPayload):
     try:
@@ -903,6 +921,24 @@ async def api_affiliate_admin_withdrawals(
 ):
     _admin_required(admin_user_id)
     return {"items": [_money_fields(item) for item in admin_list_withdrawals(status=status, limit=limit)]}
+
+
+@app.get("/api/affiliate/admin/affiliates")
+async def api_affiliate_admin_affiliates(
+    admin_user_id: str = Query(...),
+    q: str = Query(""),
+    tier: str = Query("all"),
+    status: str = Query("all"),
+    sort: str = Query("sales"),
+    limit: int = Query(200, ge=1, le=500),
+):
+    _admin_required(admin_user_id)
+    return {
+        "items": [
+            _money_fields(item)
+            for item in admin_list_affiliates(query=q, tier=tier, status=status, sort=sort, limit=limit)
+        ]
+    }
 
 
 @app.get("/api/affiliate/admin/user/{user_id}")
