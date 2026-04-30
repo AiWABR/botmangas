@@ -345,9 +345,20 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
     latest = next((item for item in chapters if item.get("chapter_id")), None)
     chapters_partial = bool(bundle.get("chapters_partial") or bundle.get("partial"))
     try:
-        total_chapters = len(chapters) or int(bundle.get("total_chapters") or bundle.get("anilist_chapters") or 0)
+        source_total_chapters = int(
+            bundle.get("source_total_chapters")
+            if bundle.get("source_total_chapters") not in (None, "")
+            else bundle.get("total_chapters") or 0
+        )
     except (TypeError, ValueError):
-        total_chapters = len(chapters)
+        source_total_chapters = 0
+
+    try:
+        estimated_total_chapters = int(bundle.get("anilist_chapters") or 0)
+    except (TypeError, ValueError):
+        estimated_total_chapters = 0
+
+    total_chapters = len(chapters) or source_total_chapters
 
     return {
         "title_id": bundle.get("title_id") or "",
@@ -366,6 +377,8 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
         "total_chapters": total_chapters,
+        "source_total_chapters": source_total_chapters,
+        "estimated_total_chapters": estimated_total_chapters,
         "chapters_partial": chapters_partial,
         "metadata_partial": bool(bundle.get("metadata_partial")),
         "chapters_error": bundle.get("chapters_error") or bundle.get("error") or "",
@@ -401,15 +414,13 @@ def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
     )
     cover_url = summary.get("cover_url") or ""
     try:
-        total_chapters = int(
-            summary.get("total_chapters")
-            or summary.get("chapters_count")
-            or summary.get("chapter_count")
-            or summary.get("anilist_chapters")
-            or 0
+        source_total_chapters = int(
+            summary.get("source_total_chapters")
+            if summary.get("source_total_chapters") not in (None, "")
+            else summary.get("chapters_count") or summary.get("chapter_count") or 0
         )
     except (TypeError, ValueError):
-        total_chapters = 0
+        source_total_chapters = 0
 
     return _public_title_bundle(
         {
@@ -423,7 +434,9 @@ def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
             "genres": summary.get("genres") or summary.get("anilist_genres") or [],
             "chapters": [],
             "languages": [],
-            "total_chapters": total_chapters,
+            "total_chapters": source_total_chapters,
+            "source_total_chapters": source_total_chapters,
+            "anilist_chapters": summary.get("anilist_chapters") or 0,
             "latest_chapter": latest_chapter,
             "chapters_partial": True,
             "chapters_error": error,
