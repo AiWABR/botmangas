@@ -1,0 +1,500 @@
+
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Afiliados Baltigo</title>
+  <meta name="theme-color" content="#0b1020" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #080b13;
+      --panel: #101624;
+      --panel-2: #151c2c;
+      --line: rgba(255,255,255,.09);
+      --line-2: rgba(255,255,255,.15);
+      --text: #f4f7fb;
+      --muted: #8f9bb2;
+      --soft: #c9d2e3;
+      --blue: #3b82f6;
+      --cyan: #06b6d4;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --radius: 8px;
+      --shadow: 0 18px 50px rgba(0,0,0,.38);
+      --safe-t: env(safe-area-inset-top, 0px);
+      --safe-b: env(safe-area-inset-bottom, 0px);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, rgba(59,130,246,.12), transparent 280px),
+        radial-gradient(circle at 80% 0%, rgba(6,182,212,.15), transparent 360px),
+        var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { max-width: 1180px; margin: 0 auto; padding: calc(18px + var(--safe-t)) 14px calc(24px + var(--safe-b)); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .logo { width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg, var(--blue), var(--cyan)); display: grid; place-items: center; font-weight: 900; box-shadow: 0 8px 26px rgba(59,130,246,.32); }
+    .brand h1 { margin: 0; font-size: 17px; line-height: 1.1; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 6px; background: rgba(255,255,255,.05); border: 1px solid var(--line); padding: 5px; border-radius: 12px; overflow-x: auto; }
+    .tab { border: 0; border-radius: 8px; color: var(--muted); background: transparent; min-height: 34px; padding: 0 12px; white-space: nowrap; }
+    .tab.active { background: #fff; color: #0b1020; font-weight: 800; }
+    .grid { display: grid; gap: 12px; }
+    .grid.kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.two { grid-template-columns: 1.15fr .85fr; align-items: start; }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.025)), var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+      min-width: 0;
+    }
+    .kpi { min-height: 112px; }
+    .kpi .label { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .kpi .value { font-size: 27px; font-weight: 900; margin-top: 10px; letter-spacing: 0; overflow-wrap: anywhere; }
+    .kpi .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .accent-green { border-color: rgba(34,197,94,.35); }
+    .accent-amber { border-color: rgba(245,158,11,.35); }
+    .accent-blue { border-color: rgba(59,130,246,.35); }
+    .accent-red { border-color: rgba(239,68,68,.35); }
+    .section-title { margin: 0 0 12px; font-size: 15px; font-weight: 900; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 12px;
+      padding: 18px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(59,130,246,.25);
+      background: linear-gradient(135deg, rgba(59,130,246,.17), rgba(6,182,212,.08)), var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .hero h2 { margin: 0; font-size: 24px; line-height: 1.08; }
+    .hero p { margin: 8px 0 0; color: var(--soft); max-width: 680px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; color: #dbeafe; background: rgba(59,130,246,.18); border: 1px solid rgba(59,130,246,.28); border-radius: 999px; padding: 5px 9px; font-size: 12px; font-weight: 800; }
+    .btn {
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      font-weight: 800;
+    }
+    .btn.primary { border-color: transparent; background: linear-gradient(135deg, var(--blue), var(--cyan)); color: white; }
+    .btn.good { border-color: transparent; background: var(--green); color: #06220f; }
+    .btn.bad { border-color: transparent; background: var(--red); color: white; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .input-row { display: flex; gap: 8px; }
+    input, select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.05);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0 12px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: rgba(59,130,246,.55); box-shadow: 0 0 0 3px rgba(59,130,246,.13); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { padding: 11px 10px; text-align: left; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 900; background: rgba(255,255,255,.07); color: var(--soft); white-space: nowrap; }
+    .status.available, .status.paid { background: rgba(34,197,94,.13); color: #86efac; }
+    .status.pending_guarantee, .status.pending { background: rgba(245,158,11,.14); color: #fcd34d; }
+    .status.withdrawal_pending { background: rgba(59,130,246,.15); color: #93c5fd; }
+    .status.canceled, .status.refused { background: rgba(239,68,68,.14); color: #fca5a5; }
+    .muted { color: var(--muted); }
+    .empty { color: var(--muted); padding: 18px; text-align: center; }
+    .hidden { display: none !important; }
+    .toast { position: fixed; left: 50%; bottom: calc(16px + var(--safe-b)); transform: translateX(-50%) translateY(20px); background: #fff; color: #0b1020; padding: 11px 14px; border-radius: 999px; font-weight: 800; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: .2s; z-index: 50; max-width: calc(100vw - 24px); }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    @media (max-width: 850px) {
+      .grid.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.two, .hero { grid-template-columns: 1fr; }
+      .hero h2 { font-size: 21px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .tabs { width: 100%; }
+      .tab { flex: 1; }
+    }
+    @media (max-width: 520px) {
+      .grid.kpis { grid-template-columns: 1fr; }
+      .input-row { flex-direction: column; }
+      .kpi .value { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">B</div>
+        <div>
+          <h1>Afiliados Baltigo</h1>
+          <p id="userLabel">Carregando usuario...</p>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-view="dashboard">Dashboard</button>
+        <button class="tab" data-view="commissions">Comissoes</button>
+        <button class="tab" data-view="withdrawals">Saques</button>
+        <button class="tab hidden" data-view="admin" id="adminTab">Admin</button>
+      </nav>
+    </header>
+
+    <main id="dashboardView">
+      <section class="hero">
+        <div>
+          <span class="badge" id="tierBadge">Nivel</span>
+          <h2>Seu painel de afiliado em tempo real</h2>
+          <p>Veja saldo, vendas, garantia de 7 dias e solicite saque por Pix quando suas comissoes estiverem liberadas.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" id="copyLinkBtn">Copiar link</button>
+          <button class="btn primary" id="withdrawBtn">Solicitar saque</button>
+        </div>
+      </section>
+
+      <section class="grid kpis">
+        <article class="card kpi accent-green"><div class="label">Saldo disponivel</div><div class="value" id="availableValue">R$ 0,00</div><div class="hint">Liberado para saque</div></article>
+        <article class="card kpi accent-amber"><div class="label">Em garantia</div><div class="value" id="pendingValue">R$ 0,00</div><div class="hint">Libera apos 7 dias</div></article>
+        <article class="card kpi accent-blue"><div class="label">Vendas validas</div><div class="value" id="salesValue">0</div><div class="hint" id="tierHint">Nivel atual</div></article>
+        <article class="card kpi"><div class="label">Saques pagos</div><div class="value" id="paidValue">R$ 0,00</div><div class="hint">Historico recebido</div></article>
+      </section>
+
+      <section class="grid two" style="margin-top:12px">
+        <article class="card">
+          <h3 class="section-title">Link de indicacao</h3>
+          <div class="input-row">
+            <input id="refLink" readonly />
+            <button class="btn" id="shareBtn">Compartilhar</button>
+          </div>
+          <p class="muted">Comissao direta conforme seu nivel e comissao indireta para vendas feitas pela sua rede.</p>
+        </article>
+        <article class="card">
+          <h3 class="section-title">Chave Pix</h3>
+          <div class="input-row">
+            <input id="pixInput" placeholder="CPF, e-mail, telefone ou chave aleatoria" />
+            <button class="btn primary" id="savePixBtn">Salvar</button>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <main id="commissionsView" class="hidden">
+      <article class="card">
+        <h3 class="section-title">Historico de comissoes</h3>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>Nivel</th><th>Plano</th><th>Venda</th><th>Comissao</th><th>Status</th><th>Libera em</th></tr></thead><tbody id="commissionsRows"></tbody></table></div>
+      </article>
+    </main>
+
+    <main id="withdrawalsView" class="hidden">
+      <article class="card">
+        <h3 class="section-title">Historico de saques</h3>
+        <div class="table-wrap"><table><thead><tr><th>ID</th><th>Valor</th><th>Pix</th><th>Status</th><th>Pedido em</th><th>Pago em</th></tr></thead><tbody id="withdrawalsRows"></tbody></table></div>
+      </article>
+    </main>
+
+    <main id="adminView" class="hidden">
+      <section class="grid kpis">
+        <article class="card kpi"><div class="label">Afiliados</div><div class="value" id="admProfiles">0</div><div class="hint">Perfis criados</div></article>
+        <article class="card kpi accent-amber"><div class="label">Saques pendentes</div><div class="value" id="admPendingWithdrawals">0</div><div class="hint" id="admPendingMoney">R$ 0,00</div></article>
+        <article class="card kpi accent-green"><div class="label">Saques pagos</div><div class="value" id="admPaidMoney">R$ 0,00</div><div class="hint" id="admPaidCount">0 pagos</div></article>
+        <article class="card kpi accent-blue"><div class="label">Comissoes disponiveis</div><div class="value" id="admAvailableMoney">R$ 0,00</div><div class="hint">Aguardando saque</div></article>
+      </section>
+      <section class="grid two" style="margin-top:12px">
+        <article class="card">
+          <h3 class="section-title">Saques pendentes</h3>
+          <div class="table-wrap"><table><thead><tr><th>ID</th><th>Usuario</th><th>Valor</th><th>Pix</th><th>Acoes</th></tr></thead><tbody id="admWithdrawalsRows"></tbody></table></div>
+        </article>
+        <article class="card">
+          <h3 class="section-title">Buscar afiliado</h3>
+          <div class="input-row">
+            <input id="admUserInput" placeholder="ID do usuario" />
+            <button class="btn primary" id="admSearchBtn">Buscar</button>
+          </div>
+          <div id="admUserResult" class="muted" style="margin-top:12px"></div>
+        </article>
+      </section>
+      <section class="card" style="margin-top:12px">
+        <h3 class="section-title">Configuracoes do programa</h3>
+        <div class="grid kpis">
+          <label><span class="muted">Bronze (%)</span><input id="setBronze" data-setting="bronze_percent" /></label>
+          <label><span class="muted">Prata (%)</span><input id="setSilver" data-setting="silver_percent" /></label>
+          <label><span class="muted">Ouro (%)</span><input id="setGold" data-setting="gold_percent" /></label>
+          <label><span class="muted">Indireta (%)</span><input id="setSecond" data-setting="second_level_percent" /></label>
+          <label><span class="muted">Minimo de vendas</span><input id="setMinSales" data-setting="min_withdraw_sales" /></label>
+          <label><span class="muted">Garantia em dias</span><input id="setGuarantee" data-setting="guarantee_days" /></label>
+        </div>
+        <div class="actions" style="margin-top:12px"><button class="btn primary" id="saveSettingsBtn">Salvar configuracoes</button></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    tg?.ready?.();
+    tg?.expand?.();
+
+    const $ = (id) => document.getElementById(id);
+    const user = tg?.initDataUnsafe?.user || {};
+    const params = new URLSearchParams(location.search);
+    const userId = String(user.id || params.get("user_id") || "");
+    const botUsername = params.get("bot") || "MangasBaltigo_Bot";
+    const state = { summary: null, commissions: [], withdrawals: [], admin: null };
+
+    function toast(text) {
+      $("toast").textContent = text;
+      $("toast").classList.add("show");
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(() => $("toast").classList.remove("show"), 2400);
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, options);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Erro na API");
+      return data;
+    }
+
+    function money(cents) {
+      const value = Number(cents || 0) / 100;
+      return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    }
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[c]));
+    }
+
+    function statusLabel(value) {
+      const map = {
+        pending_guarantee: "Em garantia",
+        available: "Disponivel",
+        withdrawal_pending: "Saque pendente",
+        paid: "Pago",
+        canceled: "Cancelada",
+        pending: "Pendente",
+        refused: "Recusado",
+      };
+      return map[value] || value || "-";
+    }
+
+    function dateLabel(value) {
+      if (!value) return "-";
+      const raw = String(value).replace(" ", "T") + "Z";
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function setView(view) {
+      ["dashboard","commissions","withdrawals","admin"].forEach(name => {
+        $(`${name}View`).classList.toggle("hidden", name !== view);
+        document.querySelector(`[data-view="${name}"]`)?.classList.toggle("active", name === view);
+      });
+    }
+
+    async function loadSummary() {
+      if (!userId) {
+        $("userLabel").textContent = "Abra pelo Telegram para identificar sua conta";
+        return;
+      }
+      state.summary = await api(`/api/affiliate/summary?user_id=${encodeURIComponent(userId)}`);
+      const s = state.summary;
+      $("userLabel").textContent = user.username ? `@${user.username}` : `ID ${userId}`;
+      $("adminTab").classList.toggle("hidden", !s.is_admin);
+      $("tierBadge").textContent = `${s.tier} - ${s.direct_percent}% direto`;
+      $("availableValue").textContent = money(s.available_cents);
+      $("pendingValue").textContent = money(s.pending_cents);
+      $("paidValue").textContent = money(s.paid_cents);
+      $("salesValue").textContent = s.valid_sales;
+      $("tierHint").textContent = `${s.second_level_percent}% indireto`;
+      $("pixInput").value = s.profile?.pix_key || "";
+      const link = `https://t.me/${botUsername}?start=ref_${userId}`;
+      $("refLink").value = link;
+      $("withdrawBtn").disabled = !s.can_withdraw;
+    }
+
+    async function loadCommissions() {
+      const data = await api(`/api/affiliate/commissions?user_id=${encodeURIComponent(userId)}&limit=120`);
+      state.commissions = data.items || [];
+      $("commissionsRows").innerHTML = state.commissions.length ? state.commissions.map(item => `
+        <tr>
+          <td>#${item.id}</td>
+          <td>${item.level === 1 ? "Direta" : "Indireta"}</td>
+          <td>${esc(item.plan)}</td>
+          <td>${money(item.sale_amount_cents)}</td>
+          <td>${money(item.commission_amount_cents)} <span class="muted">(${item.commission_percent}%)</span></td>
+          <td><span class="status ${esc(item.status)}">${statusLabel(item.status)}</span></td>
+          <td>${dateLabel(item.release_at)}</td>
+        </tr>`).join("") : `<tr><td colspan="7"><div class="empty">Nenhuma comissao registrada ainda.</div></td></tr>`;
+    }
+
+    async function loadWithdrawals() {
+      const data = await api(`/api/affiliate/withdrawals?user_id=${encodeURIComponent(userId)}&limit=80`);
+      state.withdrawals = data.items || [];
+      $("withdrawalsRows").innerHTML = state.withdrawals.length ? state.withdrawals.map(item => `
+        <tr>
+          <td>#${item.id}</td>
+          <td>${money(item.amount_cents)}</td>
+          <td>${esc(item.pix_key)}</td>
+          <td><span class="status ${esc(item.status)}">${statusLabel(item.status)}</span></td>
+          <td>${dateLabel(item.requested_at)}</td>
+          <td>${dateLabel(item.paid_at)}</td>
+        </tr>`).join("") : `<tr><td colspan="6"><div class="empty">Nenhum saque solicitado.</div></td></tr>`;
+    }
+
+    async function loadAdmin() {
+      if (!state.summary?.is_admin) return;
+      const overview = await api(`/api/affiliate/admin/overview?admin_user_id=${encodeURIComponent(userId)}`);
+      const withdrawals = await api(`/api/affiliate/admin/withdrawals?admin_user_id=${encodeURIComponent(userId)}&status=pending`);
+      const available = overview.commissions?.available?.amount_cents || 0;
+      $("admProfiles").textContent = overview.profiles || 0;
+      $("admPendingWithdrawals").textContent = overview.pending_withdrawals || 0;
+      $("admPendingMoney").textContent = money(overview.pending_withdrawal_cents || 0);
+      $("admPaidMoney").textContent = money(overview.paid_withdrawal_cents || 0);
+      $("admPaidCount").textContent = `${overview.paid_withdrawals || 0} pagos`;
+      $("admAvailableMoney").textContent = money(available);
+      const cfg = overview.settings || {};
+      $("setBronze").value = cfg.bronze_percent || "30";
+      $("setSilver").value = cfg.silver_percent || "60";
+      $("setGold").value = cfg.gold_percent || "70";
+      $("setSecond").value = cfg.second_level_percent || "25";
+      $("setMinSales").value = cfg.min_withdraw_sales || "3";
+      $("setGuarantee").value = cfg.guarantee_days || "7";
+      $("admWithdrawalsRows").innerHTML = (withdrawals.items || []).length ? withdrawals.items.map(item => `
+        <tr>
+          <td>#${item.id}</td>
+          <td>${item.user_id}</td>
+          <td>${money(item.amount_cents)}</td>
+          <td>${esc(item.pix_key)}</td>
+          <td class="actions">
+            <button class="btn good" data-pay="${item.id}">Pagar</button>
+            <button class="btn bad" data-refuse="${item.id}">Recusar</button>
+          </td>
+        </tr>`).join("") : `<tr><td colspan="5"><div class="empty">Nenhum saque pendente.</div></td></tr>`;
+    }
+
+    async function savePix() {
+      const pix = $("pixInput").value.trim();
+      await api("/api/affiliate/pix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId, pix_key: pix }),
+      });
+      toast("Chave Pix salva");
+      await loadSummary();
+    }
+
+    async function requestWithdrawal() {
+      await api("/api/affiliate/withdrawals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      toast("Saque solicitado");
+      await Promise.all([loadSummary(), loadWithdrawals(), loadAdmin()]);
+    }
+
+    async function copyLink() {
+      await navigator.clipboard?.writeText($("refLink").value);
+      toast("Link copiado");
+    }
+
+    function shareLink() {
+      const text = `Entra no bot de mangas comigo: ${$("refLink").value}`;
+      if (tg?.openTelegramLink) tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent($("refLink").value)}&text=${encodeURIComponent("Entra no bot de mangas comigo")}`);
+      else navigator.share?.({ text }).catch(() => copyLink());
+    }
+
+    async function adminPay(id) {
+      await api(`/api/affiliate/admin/withdrawals/${id}/pay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admin_user_id: userId }),
+      });
+      toast("Saque marcado como pago");
+      await Promise.all([loadAdmin(), loadSummary()]);
+    }
+
+    async function adminRefuse(id) {
+      await api(`/api/affiliate/admin/withdrawals/${id}/refuse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admin_user_id: userId, note: "Recusado pelo painel" }),
+      });
+      toast("Saque recusado");
+      await Promise.all([loadAdmin(), loadSummary()]);
+    }
+
+    async function adminSearch() {
+      const target = $("admUserInput").value.trim();
+      if (!target) return;
+      const data = await api(`/api/affiliate/admin/user/${encodeURIComponent(target)}?admin_user_id=${encodeURIComponent(userId)}`);
+      const s = data.summary;
+      $("admUserResult").innerHTML = `
+        <div class="card" style="box-shadow:none;background:rgba(255,255,255,.035)">
+          <strong>ID ${esc(target)}</strong><br>
+          Nivel: ${esc(s.tier)} (${s.direct_percent}% direto)<br>
+          Vendas validas: ${s.valid_sales}<br>
+          Disponivel: ${money(s.available_cents)}<br>
+          Em garantia: ${money(s.pending_cents)}<br>
+          Pix: ${esc(s.profile?.pix_key || "nao cadastrado")}
+        </div>`;
+    }
+
+    async function saveSettings() {
+      const inputs = [...document.querySelectorAll("[data-setting]")];
+      for (const input of inputs) {
+        await api("/api/affiliate/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ admin_user_id: userId, key: input.dataset.setting, value: input.value.trim() }),
+        });
+      }
+      toast("Configuracoes salvas");
+      await Promise.all([loadAdmin(), loadSummary()]);
+    }
+
+    document.querySelectorAll(".tab").forEach(btn => btn.addEventListener("click", async () => {
+      const view = btn.dataset.view;
+      setView(view);
+      if (view === "commissions") await loadCommissions();
+      if (view === "withdrawals") await loadWithdrawals();
+      if (view === "admin") await loadAdmin();
+    }));
+    $("savePixBtn").onclick = () => savePix().catch(err => toast(err.message));
+    $("withdrawBtn").onclick = () => requestWithdrawal().catch(err => toast(err.message));
+    $("copyLinkBtn").onclick = () => copyLink().catch(() => toast("Nao consegui copiar"));
+    $("shareBtn").onclick = shareLink;
+    $("admSearchBtn").onclick = () => adminSearch().catch(err => toast(err.message));
+    $("saveSettingsBtn").onclick = () => saveSettings().catch(err => toast(err.message));
+    $("admWithdrawalsRows").addEventListener("click", (event) => {
+      const pay = event.target.closest("[data-pay]")?.dataset.pay;
+      const refuse = event.target.closest("[data-refuse]")?.dataset.refuse;
+      if (pay) adminPay(pay).catch(err => toast(err.message));
+      if (refuse) adminRefuse(refuse).catch(err => toast(err.message));
+    });
+
+    loadSummary().catch(err => toast(err.message));
+  </script>
+</body>
+</html>
