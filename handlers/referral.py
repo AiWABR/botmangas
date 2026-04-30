@@ -4,7 +4,7 @@ from urllib.parse import quote
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import ContextTypes
 
-from config import BOT_USERNAME, WEBAPP_BASE_URL
+from config import BOT_USERNAME, PROMO_BANNER_URL, WEBAPP_BASE_URL
 from services.affiliate_db import affiliate_summary, cents_to_money
 
 
@@ -21,16 +21,28 @@ async def _send_panel(message, user_id: int):
     app_url = _affiliate_webapp_url(user_id)
 
     text = (
-        "<b>Programa de Afiliados</b>\n\n"
-        f"Seu nivel: <b>{html.escape(str(summary['tier']))}</b>\n"
-        f"Comissao direta: <b>{summary['direct_percent']}%</b>\n"
-        f"Comissao indireta: <b>{summary['second_level_percent']}%</b>\n\n"
-        f"Saldo disponivel: <b>{cents_to_money(summary['available_cents'])}</b>\n"
-        f"Em garantia: <b>{cents_to_money(summary['pending_cents'])}</b>\n"
-        f"Vendas validas: <b>{summary['valid_sales']}</b>\n\n"
-        "Painel completo:\n"
-        "veja historico, cadastre Pix, solicite saque e acompanhe tudo pelo webapp.\n\n"
-        f"Seu link:\n<code>{html.escape(link)}</code>"
+        "<b>💸 PROGRAMA DE AFILIADOS BALTIGO</b>\n\n"
+        "<i>Transforme o bot em uma fonte de renda dentro do Telegram.</i>\n\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "<b>📊 Seu desempenho</b>\n\n"
+        f"💰 Disponível: <b>{cents_to_money(summary['available_cents'])}</b>\n"
+        f"⏳ Em garantia: <b>{cents_to_money(summary['pending_cents'])}</b>\n"
+        f"📈 Vendas válidas: <b>{summary['valid_sales']}</b>\n\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "<b>🚀 Como funciona</b>\n\n"
+        "Você indica → a pessoa assina\n"
+        "→ você ganha comissão automaticamente\n\n"
+        "Após <b>7 dias</b>, o valor fica disponível pra saque via Pix.\n\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "<b>⚡ Painel completo</b>\n\n"
+        "Acesse seu painel para:\n\n"
+        "• 🔗 Ver e copiar seu link\n"
+        "• 👥 Acompanhar indicados\n"
+        "• 📊 Ver cliques e conversões\n"
+        "• 💰 Controlar comissões\n"
+        "• 🏦 Solicitar saque\n\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "<i>Toque no botão abaixo para abrir seu painel 👇</i>"
     )
 
     rows = []
@@ -49,12 +61,20 @@ async def _send_panel(message, user_id: int):
     if not app_url:
         text += "\n\nConfigure WEBAPP_BASE_URL para ativar o botao do painel."
 
-    await message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(rows),
-        disable_web_page_preview=True,
-    )
+    try:
+        await message.reply_photo(
+            photo=PROMO_BANNER_URL,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+    except Exception:
+        await message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(rows),
+            disable_web_page_preview=True,
+        )
 
 
 async def indicacoes(update: Update, context: ContextTypes.DEFAULT_TYPE):
