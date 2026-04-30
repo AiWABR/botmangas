@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config import DATA_DIR
-from services.referral_db import get_referrer_chain
+from services.referral_db import get_referral_user, get_referrer_chain, referral_stats
 
 DB_PATH = DATA_DIR / "affiliate_gateway.sqlite3"
 
@@ -93,13 +93,21 @@ def init_affiliate_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS affiliate_profiles (
                 user_id INTEGER PRIMARY KEY,
+                full_name TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
                 pix_key TEXT DEFAULT '',
                 blocked INTEGER DEFAULT 0,
+                account_created_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        _ensure_column(conn, "affiliate_profiles", "full_name", "TEXT DEFAULT ''")
+        _ensure_column(conn, "affiliate_profiles", "email", "TEXT DEFAULT ''")
+        _ensure_column(conn, "affiliate_profiles", "phone", "TEXT DEFAULT ''")
+        _ensure_column(conn, "affiliate_profiles", "account_created_at", "TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS affiliate_commissions (
@@ -157,6 +165,13 @@ def init_affiliate_db() -> None:
             )
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(row["name"] == column for row in rows):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def get_settings() -> dict[str, str]:
     init_affiliate_db()
     with _connect() as conn:
@@ -188,8 +203,10 @@ def ensure_profile(user_id: int | str) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO affiliate_profiles(user_id, pix_key, blocked, created_at, updated_at)
-            VALUES (?, '', 0, ?, ?)
+            INSERT OR IGNORE INTO affiliate_profiles(
+                user_id, full_name, email, phone, pix_key, blocked, account_created_at, created_at, updated_at
+            )
+            VALUES (?, '', '', '', '', 0, NULL, ?, ?)
             """,
             (uid, now, now),
         )
@@ -219,10 +236,49 @@ def get_profile(user_id: int | str) -> dict[str, Any]:
     ensure_profile(uid)
     with _connect() as conn:
         row = conn.execute(
-            "SELECT user_id, pix_key, blocked, created_at, updated_at FROM affiliate_profiles WHERE user_id = ?",
+            """
+            SELECT user_id, full_name, email, phone, pix_key, blocked, account_created_at, created_at, updated_at
+            FROM affiliate_profiles
+            WHERE user_id = ?
+            """,
             (uid,),
         ).fetchone()
-    return dict(row) if row else {"user_id": uid, "pix_key": "", "blocked": 0}
+    return dict(row) if row else {"user_id": uid, "pix_key": "", "blocked": 0, "account_created_at": None}
+
+
+def complete_affiliate_account(user_id: int | str, full_name: str, email: str, phone: str) -> dict[str, Any]:
+    uid = int(user_id)
+    name = str(full_name or "").strip()
+    email_text = str(email or "").strip().lower()
+    phone_text = str(phone or "").strip()
+    if len(name) < 3:
+        raise ValueError("Informe seu nome completo.")
+    if "@" not in email_text or "." not in email_text:
+        raise ValueError("Informe um e-mail valido.")
+    if len(phone_text) < 8:
+        raise ValueError("Informe seu telefone ou WhatsApp.")
+
+    ensure_profile(uid)
+    now = _dt_text()
+    with _connect() as conn:
+        current = conn.execute(
+            "SELECT account_created_at FROM affiliate_profiles WHERE user_id = ?",
+            (uid,),
+        ).fetchone()
+        created_at = current["account_created_at"] if current and current["account_created_at"] else now
+        conn.execute(
+            """
+            UPDATE affiliate_profiles
+            SET full_name = ?,
+                email = ?,
+                phone = ?,
+                account_created_at = ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (name[:160], email_text[:180], phone_text[:80], created_at, now, uid),
+        )
+    return get_profile(uid)
 
 
 def _valid_sales_count(conn: sqlite3.Connection, user_id: int) -> int:
@@ -421,6 +477,7 @@ def affiliate_summary(user_id: int | str) -> dict[str, Any]:
     return {
         "user_id": uid,
         "profile": profile,
+        "referral": referral_stats(uid),
         "tier": tier,
         "direct_percent": percent,
         "second_level_percent": float(settings.get("second_level_percent") or 25),
@@ -625,6 +682,78 @@ def admin_list_withdrawals(status: str = "pending", limit: int = 100) -> list[di
             (status, status, max(1, min(int(limit or 100), 300))),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def admin_list_affiliates(
+    *,
+    query: str = "",
+    tier: str = "all",
+    status: str = "all",
+    sort: str = "sales",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    release_due_commissions()
+    needle = str(query or "").strip().lower()
+    tier_filter = str(tier or "all").strip().lower()
+    status_filter = str(status or "all").strip().lower()
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM affiliate_profiles
+            ORDER BY COALESCE(account_created_at, created_at) DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit or 200), 500)),),
+        ).fetchall()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        profile = dict(row)
+        uid = int(profile["user_id"])
+        summary = affiliate_summary(uid)
+        refs = referral_stats(uid)
+        item = {
+            "user_id": uid,
+            "full_name": profile.get("full_name") or "",
+            "email": profile.get("email") or "",
+            "phone": profile.get("phone") or "",
+            "username": (get_referral_user(uid) or {}).get("username") or "",
+            "created_at": profile.get("account_created_at") or profile.get("created_at") or "",
+            "pix_key": profile.get("pix_key") or "",
+            "blocked": int(profile.get("blocked") or 0),
+            "status": "blocked" if int(profile.get("blocked") or 0) else ("active" if profile.get("account_created_at") else "incomplete"),
+            "tier": summary.get("tier") or "Bronze",
+            "clicks": int(refs.get("clicks") or 0),
+            "referred_people": int(refs.get("total") or 0),
+            "valid_sales": int(summary.get("valid_sales") or 0),
+            "pending_cents": int(summary.get("pending_cents") or 0),
+            "available_cents": int(summary.get("available_cents") or 0),
+            "paid_cents": int(summary.get("paid_cents") or 0),
+            "withdrawal_pending_cents": int(summary.get("withdrawal_pending_cents") or 0),
+            "withdrawals_paid_cents": int((summary.get("withdrawals") or {}).get("paid", {}).get("amount_cents") or 0),
+            "withdrawals_pending_cents": int((summary.get("withdrawals") or {}).get("pending", {}).get("amount_cents") or 0),
+        }
+        searchable = " ".join(str(item.get(key) or "") for key in ("user_id", "full_name", "email", "phone"))
+        if needle and needle not in searchable.lower():
+            continue
+        if tier_filter != "all" and str(item["tier"]).lower() != tier_filter:
+            continue
+        if status_filter != "all" and item["status"] != status_filter:
+            continue
+        items.append(item)
+
+    sort_key = str(sort or "sales").strip().lower()
+    if sort_key == "saldo":
+        items.sort(key=lambda x: x["available_cents"], reverse=True)
+    elif sort_key == "cliques":
+        items.sort(key=lambda x: x["clicks"], reverse=True)
+    elif sort_key == "data":
+        items.sort(key=lambda x: x["created_at"], reverse=True)
+    else:
+        items.sort(key=lambda x: x["valid_sales"], reverse=True)
+    return items
 
 
 def admin_user_snapshot(user_id: int | str) -> dict[str, Any]:
