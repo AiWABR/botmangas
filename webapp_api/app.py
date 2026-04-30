@@ -22,6 +22,8 @@ from config import (
     BOT_TOKEN,
     CAKTO_NOTIFY_USERS,
     CAKTO_WEBHOOK_SECRET,
+    CACHE_CLEANUP_INTERVAL_SECONDS,
+    CACHE_CLEANUP_STARTUP,
     DATA_DIR,
     HOME_SECTION_LIMIT,
     PREFERRED_CHAPTER_LANG,
@@ -39,6 +41,7 @@ from services.catalog_client import (
     search_titles,
 )
 from services.cakto_gateway import extract_webhook_secret_values, process_cakto_webhook
+from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_loop
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
@@ -67,6 +70,17 @@ app.add_middleware(
 )
 
 init_offline_access_db()
+
+
+@app.on_event("startup")
+async def _startup_cache_cleanup() -> None:
+    first_delay = 0 if CACHE_CLEANUP_STARTUP else CACHE_CLEANUP_INTERVAL_SECONDS
+    start_cache_cleanup_loop(first_delay=first_delay)
+
+
+@app.on_event("shutdown")
+async def _shutdown_cache_cleanup() -> None:
+    await stop_cache_cleanup_loop()
 
 
 class ProgressPayload(BaseModel):
@@ -594,7 +608,7 @@ async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[st
                 get_title_chapters_snapshot(title_id, lang),
                 timeout=min(_TITLE_OPEN_TIMEOUT, 4.5),
             )
-            if snapshot.get("chapters") or snapshot.get("total_chapters"):
+            if snapshot.get("chapters"):
                 refresh_full_bundle()
                 return attach_user_data(_public_title_bundle(snapshot, lang))
         except Exception as error:
