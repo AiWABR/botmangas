@@ -23,6 +23,7 @@ from utils.gatekeeper import ensure_channel_membership
 START_COOLDOWN = 1.0
 START_DEEP_LINK_TTL = 8.0
 START_OPEN_TIMEOUT = 28.0
+START_BANNER_URL = "https://photo.chelpbot.me/AgACAgEAAxkBa6lQWGn6EHujoRoTvxvh_-eBzTvgZcGwAAIRDWsbcMLQR5G16fTFC8WvAQADAgADeQADOwQ/photo.jpg"
 
 _START_USER_LOCKS: dict[int, asyncio.Lock] = {}
 _START_INFLIGHT: dict[str, float] = {}
@@ -218,20 +219,24 @@ async def _send_welcome(message, first_name: str) -> None:
             ]
         )
 
+    safe_name = html.escape(first_name or "leitor")
+    safe_brand = html.escape(BOT_BRAND)
     text = (
-        f"🎬 <b>Bem-vindo ao {BOT_BRAND}!</b>\n\n"
-        "Aqui você pode encontrar animes de forma rápida, direto no Telegram.\n\n"
+        f"🎬 <b>Bem-vindo ao {safe_brand}, {safe_name}!</b>\n\n"
+        "Aqui você pode encontrar mangás/manhwas/manhuas de forma\n"
+        "rápida, direto no Telegram.\n\n"
         "✨ <b>O que você pode fazer aqui:</b>\n\n"
-        "• 🔎 Buscar qualquer anime\n"
-        "• 📺 Navegar pelos episódios\n"
-        "• ✅ Marcar episódios como vistos\n"
-        "• ⚡ Assistir rápido e sem complicação\n\n"
-        "Use <code>/buscar</code> para começar."
+        "<blockquote>"
+        "🔎 Encontra qualquer obra em segundos\n"
+        "📖 Lê capítulos sem dor de cabeça\n"
+        "📚 Acompanha suas obras favoritas"
+        "</blockquote>\n"
+        "<i>O catálogo está liberado para todos!</i>"
     )
 
     try:
         await message.reply_photo(
-            photo=PROMO_BANNER_URL,
+            photo=START_BANNER_URL,
             caption=text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
