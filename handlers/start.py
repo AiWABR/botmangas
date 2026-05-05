@@ -214,12 +214,17 @@ async def _send_welcome(message, user_id: int, first_name: str) -> None:
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
         )
     except Exception:
-        await message.reply_text(
+            await message.reply_text(
             text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(keyboard_rows),
             disable_web_page_preview=True,
         )
+
+
+async def send_home_panel(target, user_id: int, first_name: str = "leitor") -> None:
+    message = getattr(target, "message", None) or target
+    await _send_welcome(message, user_id, first_name)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
