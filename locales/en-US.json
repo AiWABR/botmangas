@@ -29,7 +29,9 @@
     "duplicate": "⏳ This request is already being processed.",
     "cooldown": "⏳ Wait a moment before repeating this action.",
     "ref_ok": "✅ Referral registered. Keep using the bot so it can be reviewed.",
-    "ref_self": "This is your own referral link, so it does not count."
+    "ref_self": "This is your own referral link, so it does not count.",
+    "ref_already_same": "✅ This referral was already connected to the same link.",
+    "ref_exists": "You already joined through another referral."
   },
   "search": {
     "how_to": "🔎 <b>How to search</b>\n\nSend <code>/buscar manga title</code> or simply type the title in private chat.\n\nExample: <code>Solo Leveling</code>",
@@ -46,18 +48,30 @@
     "text": "📚 <b>Help - {brand}</b>\n\n🔎 <b>Search</b>\nUse <code>/buscar title</code> or type the title in private chat.\n\n📖 <b>Read</b>\nOpen a title, choose a chapter and read in the MiniApp.\n\n⭐ <b>Extras</b>\n/mperfil - reading profile\n/plano - offline plans\n/indicacoes - affiliate program\n/idioma - change language"
   },
   "plan": {
-    "title": "📥 <b>My offline plan</b>",
-    "no_plan": "You do not have an active plan on <b>{brand}</b> yet.\nChoose a plan below to unlock offline downloads.",
-    "status": "Status",
-    "id": "ID",
-    "renew": "🔄 Renew {plan}",
-    "choose": "Choose a plan below to unlock offline PDFs and EPUBs."
+    "not_defined": "not set",
+    "lifetime": "lifetime",
+    "one_day": "1 day",
+    "days": "{days} days",
+    "never_expires": "never expires",
+    "expired": "expired",
+    "remaining_days": "{days} day(s) and {hours}h",
+    "remaining_hours": "{hours}h and {minutes}min",
+    "remaining_minutes": "{minutes}min",
+    "status_none": "no plan",
+    "status_active": "active",
+    "status_expired": "expired",
+    "status_revoked": "blocked",
+    "status_inactive": "inactive",
+    "renew_button": "🔄 Renew {plan}",
+    "no_plan_text": "📥 <b>My offline plan</b>\n\n» <b>Status:</b> <i>{status}</i>\n» <b>ID:</b> <code>{uid}</code>\n\nYou do not have an active plan on <b>{brand}</b> yet.\nChoose a plan below to unlock offline PDFs and EPUBs.",
+    "active_text": "📥 <b>My offline plan</b>\n\n» <b>Status:</b> <i>{status}</i>\n» <b>Plan:</b> <i>{plan}</i>\n» <b>Duration:</b> <i>{duration}</i>\n» <b>Valid until:</b> <i>{expires}</i>\n» <b>Time left:</b> <i>{remaining}</i>\n» <b>ID:</b> <code>{uid}</code>\n\nUse the buttons below to renew or contact support."
   },
   "referral": {
     "open_panel": "💼 Open affiliate dashboard",
     "share_telegram": "Share on Telegram",
     "share_whatsapp": "Share on WhatsApp",
-    "title": "💸 <b>Baltigo Affiliate Program</b>",
-    "body": "<i>Turn your referrals into commissions inside Telegram.</i>\n\n📊 <b>Your performance</b>\n\n💰 Available: <b>{available}</b>\n⏳ Pending: <b>{pending}</b>\n📈 Valid sales: <b>{sales}</b>\n\n🚀 You refer, they subscribe, and commission is calculated automatically. After the guarantee period, the amount becomes available for Pix withdrawal."
+    "share_text": "Join this manga bot with me:",
+    "no_webapp": "Configure WEBAPP_BASE_URL to enable the full dashboard.",
+    "body": "💸 <b>Baltigo Affiliate Program</b>\n\n<i>Turn your referrals into commissions inside Telegram.</i>\n\n📊 <b>Your performance</b>\n\n💰 Available: <b>{available}</b>\n⏳ Pending: <b>{pending}</b>\n📈 Valid sales: <b>{sales}</b>\n\n🚀 You refer, they subscribe, and commission is calculated automatically. After the guarantee period, the amount becomes available for Pix withdrawal."
   }
 }
