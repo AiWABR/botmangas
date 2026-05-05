@@ -1,0 +1,63 @@
+{
+  "common": {
+    "back": "⬅️ Volver",
+    "try_again": "🔄 Intentar otra vez",
+    "support": "🛟 Soporte",
+    "open_library": "📚 Abrir biblioteca",
+    "search": "🔎 Buscar manga",
+    "language": "🌐 Cambiar idioma",
+    "plans": "💎 Ver planes",
+    "referrals": "🎁 Mis referidos",
+    "processing": "⏳ Estoy procesando. Espera un momento.",
+    "private_only": "🔒 Este comando funciona mejor en privado. Escríbeme allí e inténtalo otra vez.",
+    "generic_error": "⚠️ No pude procesar eso ahora. Inténtalo de nuevo en unos segundos."
+  },
+  "language": {
+    "title": "🌐 <b>Idioma del bot</b>",
+    "body": "Elige el idioma para mensajes, botones y avisos del bot.",
+    "current": "Idioma actual: <b>{locale}</b>",
+    "saved": "✅ Idioma cambiado a <b>{locale}</b>.",
+    "pt": "🇧🇷 Português",
+    "en": "🇺🇸 English",
+    "es": "🇪🇸 Español"
+  },
+  "start": {
+    "welcome": "🎬 <b>Bienvenido a {brand}, {name}!</b>\n\nEncuentra manga, manhwa y manhua dentro de Telegram, con lectura rápida, historial, favoritos y modo offline.\n\n<blockquote>🔎 Busca por nombre\n📖 Abre capítulos en pocos toques\n⭐ Guarda favoritos y continúa después</blockquote>\n\n<i>Escribe el nombre de una obra o usa /buscar.</i>",
+    "loading_title": "⏳ <b>Abriendo obra...</b>\n\nCargando detalles y capítulos.",
+    "loading_chapter": "⏳ <b>Abriendo capítulo...</b>\n\nPreparando la lectura.",
+    "timeout": "⚠️ Esta solicitud tardó demasiado. Inténtalo otra vez en unos segundos.",
+    "duplicate": "⏳ Esta solicitud ya se está procesando.",
+    "cooldown": "⏳ Espera un momento antes de repetir esta acción.",
+    "ref_ok": "✅ Invitación registrada. Sigue usando el bot para que entre en revisión.",
+    "ref_self": "Este es tu propio enlace de invitación, así que no cuenta."
+  },
+  "search": {
+    "how_to": "🔎 <b>Cómo buscar</b>\n\nEnvía <code>/buscar nombre del manga</code> o escribe solo el nombre en privado.\n\nEjemplo: <code>Solo Leveling</code>",
+    "loading": "🔎 <b>Buscando en la biblioteca...</b>\n<i>Normalmente tarda pocos segundos.</i>",
+    "results": "🔎 <b>Resultados de búsqueda</b>\n\n<blockquote>📚 <b>Búsqueda:</b> {query}\n📄 <b>Página:</b> {page}/{total_pages}\n📦 <b>Resultados:</b> {total}</blockquote>\n\nToca una obra para abrirla.",
+    "no_results": "⚠️ No encontré esa obra ahora. Prueba otro nombre o una variación del título.",
+    "too_short": "⚠️ Escribe al menos 2 caracteres para buscar.",
+    "timeout": "⚠️ La búsqueda tardó demasiado. Inténtalo otra vez en unos segundos.",
+    "error": "⚠️ No pude cargar esta búsqueda ahora. Inténtalo otra vez en unos segundos.",
+    "cooldown": "⏳ Espera un momento antes de repetir esta búsqueda.",
+    "inflight": "⏳ Esta búsqueda ya se está procesando."
+  },
+  "help": {
+    "text": "📚 <b>Ayuda - {brand}</b>\n\n🔎 <b>Buscar</b>\nUsa <code>/buscar nombre</code> o escribe el nombre en privado.\n\n📖 <b>Leer</b>\nAbre una obra, elige un capítulo y lee en el MiniApp.\n\n⭐ <b>Extras</b>\n/mperfil - perfil de lectura\n/plano - planes offline\n/indicacoes - programa de afiliados\n/idioma - cambiar idioma"
+  },
+  "plan": {
+    "title": "📥 <b>Mi plan offline</b>",
+    "no_plan": "Todavía no tienes un plan activo en <b>{brand}</b>.\nElige un plan abajo para liberar descargas offline.",
+    "status": "Estado",
+    "id": "ID",
+    "renew": "🔄 Renovar {plan}",
+    "choose": "Elige un plan abajo para liberar PDFs y EPUBs offline."
+  },
+  "referral": {
+    "open_panel": "💼 Abrir panel de afiliados",
+    "share_telegram": "Compartir en Telegram",
+    "share_whatsapp": "Compartir en WhatsApp",
+    "title": "💸 <b>Programa de Afiliados Baltigo</b>",
+    "body": "<i>Convierte tus referidos en comisión dentro de Telegram.</i>\n\n📊 <b>Tu rendimiento</b>\n\n💰 Disponible: <b>{available}</b>\n⏳ En garantía: <b>{pending}</b>\n📈 Ventas válidas: <b>{sales}</b>\n\n🚀 Tú recomiendas, la persona se suscribe y la comisión se calcula automáticamente. Después del período de garantía, el valor queda disponible para retiro por Pix."
+  }
+}

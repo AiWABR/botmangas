@@ -1,0 +1,63 @@
+{
+  "common": {
+    "back": "⬅️ Voltar",
+    "try_again": "🔄 Tentar novamente",
+    "support": "🛟 Suporte",
+    "open_library": "📚 Abrir biblioteca",
+    "search": "🔎 Buscar mangá",
+    "language": "🌐 Alterar idioma",
+    "plans": "💎 Ver planos",
+    "referrals": "🎁 Minhas indicações",
+    "processing": "⏳ Estou processando. Aguarde um instante.",
+    "private_only": "🔒 Esse comando funciona melhor no privado. Me chame por lá e tente novamente.",
+    "generic_error": "⚠️ Não consegui processar isso agora. Tente novamente em alguns segundos."
+  },
+  "language": {
+    "title": "🌐 <b>Idioma do bot</b>",
+    "body": "Escolha o idioma em que você quer receber mensagens, botões e avisos do bot.",
+    "current": "Idioma atual: <b>{locale}</b>",
+    "saved": "✅ Idioma alterado para <b>{locale}</b>.",
+    "pt": "🇧🇷 Português",
+    "en": "🇺🇸 English",
+    "es": "🇪🇸 Español"
+  },
+  "start": {
+    "welcome": "🎬 <b>Bem-vindo ao {brand}, {name}!</b>\n\nEncontre mangás, manhwas e manhuas direto no Telegram, com leitura rápida, histórico, favoritos e modo offline.\n\n<blockquote>🔎 Busque pelo nome da obra\n📖 Abra capítulos em poucos toques\n⭐ Salve favoritos e continue depois</blockquote>\n\n<i>Digite o nome de uma obra ou use /buscar.</i>",
+    "loading_title": "⏳ <b>Abrindo obra...</b>\n\nEstou carregando os detalhes e capítulos.",
+    "loading_chapter": "⏳ <b>Abrindo capítulo...</b>\n\nPreparando a leitura.",
+    "timeout": "⚠️ Essa solicitação demorou demais. Tente novamente em alguns segundos.",
+    "duplicate": "⏳ Essa solicitação já está sendo processada.",
+    "cooldown": "⏳ Aguarde um instante antes de repetir essa ação.",
+    "ref_ok": "✅ Convite registrado. Continue usando o bot para a indicação entrar em análise.",
+    "ref_self": "Esse é o seu próprio link de convite, então ele não conta como indicação."
+  },
+  "search": {
+    "how_to": "🔎 <b>Como buscar</b>\n\nEnvie <code>/buscar nome do mangá</code> ou digite apenas o nome da obra no privado.\n\nExemplo: <code>Solo Leveling</code>",
+    "loading": "🔎 <b>Buscando no acervo...</b>\n<i>Isso normalmente leva poucos segundos.</i>",
+    "results": "🔎 <b>Resultado da busca</b>\n\n<blockquote>📚 <b>Pesquisa:</b> {query}\n📄 <b>Página:</b> {page}/{total_pages}\n📦 <b>Resultados:</b> {total}</blockquote>\n\nToque em uma obra para abrir.",
+    "no_results": "⚠️ Não encontrei essa obra agora. Tente outro nome, abreviação ou variação do título.",
+    "too_short": "⚠️ Digite pelo menos 2 caracteres para buscar.",
+    "timeout": "⚠️ A busca demorou demais. Tente novamente em alguns segundos.",
+    "error": "⚠️ Não consegui carregar essa busca agora. Tente novamente em alguns segundos.",
+    "cooldown": "⏳ Aguarde um instante antes de repetir essa busca.",
+    "inflight": "⏳ Essa busca já está sendo processada."
+  },
+  "help": {
+    "text": "📚 <b>Ajuda - {brand}</b>\n\n🔎 <b>Buscar</b>\nUse <code>/buscar nome da obra</code> ou envie apenas o nome no privado.\n\n📖 <b>Ler</b>\nAbra uma obra, escolha um capítulo e leia pelo MiniApp.\n\n⭐ <b>Extras</b>\n/mperfil - perfil de leitura\n/plano - planos offline\n/indicacoes - programa de afiliados\n/idioma - alterar idioma"
+  },
+  "plan": {
+    "title": "📥 <b>Meu plano offline</b>",
+    "no_plan": "Você ainda não tem um plano ativo no <b>{brand}</b>.\nEscolha um plano abaixo para liberar downloads offline.",
+    "status": "Status",
+    "id": "ID",
+    "renew": "🔄 Renovar {plan}",
+    "choose": "Escolha um plano abaixo para liberar PDFs e EPUBs offline."
+  },
+  "referral": {
+    "open_panel": "💼 Abrir painel de afiliados",
+    "share_telegram": "Compartilhar no Telegram",
+    "share_whatsapp": "Compartilhar no WhatsApp",
+    "title": "💸 <b>Programa de Afiliados Baltigo</b>",
+    "body": "<i>Transforme suas indicações em comissão dentro do Telegram.</i>\n\n📊 <b>Seu desempenho</b>\n\n💰 Disponível: <b>{available}</b>\n⏳ Em garantia: <b>{pending}</b>\n📈 Vendas válidas: <b>{sales}</b>\n\n🚀 Você indica, a pessoa assina e a comissão é calculada automaticamente. Após o prazo de garantia, o valor fica disponível para saque via Pix."
+  }
+}
