@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from config import AI_TIMEZONE, BOT_BRAND
@@ -151,13 +152,29 @@ def _plan_text(user_id: int, access: dict | None) -> str:
 
 async def send_plan_panel(target, user_id: int) -> None:
     access = get_offline_access(user_id)
+    text = _plan_text(user_id, access)
+    markup = _plan_keyboard(user_id, access)
+
+    if hasattr(target, "edit_message_text"):
+        try:
+            if getattr(target.message, "photo", None):
+                await target.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+            else:
+                await target.edit_message_text(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+            return
+        except BadRequest as error:
+            if "message is not modified" in str(error).lower():
+                return
+        except TelegramError:
+            pass
+
     sender = getattr(target, "message", None) or target
-    await sender.reply_text(
-        _plan_text(user_id, access),
-        parse_mode="HTML",
-        reply_markup=_plan_keyboard(user_id, access),
-        disable_web_page_preview=True,
-    )
+    await sender.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 
 async def plano(update: Update, context: ContextTypes.DEFAULT_TYPE):
