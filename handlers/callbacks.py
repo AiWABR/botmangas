@@ -42,6 +42,7 @@ from services.language_prefs import (
     bundle_language_options,
     get_user_language,
     language_badge,
+    language_flag,
     normalize_language,
     set_user_language,
 )
@@ -396,15 +397,16 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
 
 def _language_text(bundle: dict, user_id: int | None) -> str:
     title = html.escape(bundle.get("title") or "Manga")
-    current = html.escape(language_badge(_user_lang(user_id)))
+    current_lang = _user_lang(user_id)
+    current = html.escape(f"{current_lang.upper()} {language_flag(current_lang)}")
     options = bundle_language_options(bundle)
     total = len(options)
     return (
-        f"🌐 <b>Escolha o idioma dos capítulos</b>\n\n"
+        f"🌎 <b>Idioma</b>\n\n"
         f"» <b>Obra:</b> <i>{title}</i>\n"
         f"» <b>Atual:</b> <i>{current}</i>\n"
         f"» <b>Disponíveis:</b> <i>{total}</i>\n\n"
-        "Depois de escolher, as listas, leitura online, PDF e EPUB passam a usar esse idioma."
+        "Escolha abaixo o idioma dos capítulos."
     )
 
 
@@ -416,9 +418,10 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
 
     for option in bundle_language_options(bundle):
         code = option["code"]
-        prefix = "✅ " if code == current else ""
-        line.append(InlineKeyboardButton(f"{prefix}{option['badge']}", callback_data=f"mb|setlang|{title_id}|{code}"))
-        if len(line) == 2:
+        prefix = "🔘 " if code == current else ""
+        label = f"{prefix}{option.get('short') or code.upper()} {option.get('flag') or language_flag(code)}"
+        line.append(InlineKeyboardButton(label, callback_data=f"mb|setlang|{title_id}|{code}"))
+        if len(line) == 3:
             rows.append(line)
             line = []
     if line:
