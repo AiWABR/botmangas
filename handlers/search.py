@@ -197,7 +197,6 @@ def render_search_page(context: ContextTypes.DEFAULT_TYPE, token: str, page: int
     total_pages = max(1, ((total - 1) // RESULTS_PER_PAGE) + 1)
     page = max(1, min(int(page), total_pages))
     return {
-        "photo": PROMO_BANNER_URL,
         "text": _build_search_text(query, page, total),
         "keyboard": build_search_keyboard(results, page, token),
     }
