@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import html
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
+from threading import Lock
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -20,14 +24,20 @@ from config import (
     ADMIN_IDS,
     BASE_DIR,
     BOT_BRAND,
+    BOT_USERNAME,
     BOT_TOKEN,
     CAKTO_NOTIFY_USERS,
+    CAKTO_REQUIRE_WEBHOOK_SECRET,
     CAKTO_WEBHOOK_SECRET,
     CACHE_CLEANUP_INTERVAL_SECONDS,
     CACHE_CLEANUP_STARTUP,
     DATA_DIR,
     HOME_SECTION_LIMIT,
+    API_CACHE_MAX_ENTRIES,
+    API_RATE_LIMIT_PER_MINUTE,
     PREFERRED_CHAPTER_LANG,
+    WEBAPP_CORS_ORIGINS,
+    WEBAPP_TRUST_QUERY_USER_ID,
 )
 from services.catalog_client import (
     flatten_chapters,
@@ -83,6 +93,7 @@ from services.profile_store import (
 MINIAPP_DIR = BASE_DIR / "miniapp"
 AFFILIATE_APP_DIR = MINIAPP_DIR / "affiliate"
 PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
+_PROGRESS_LOCK = Lock()
 
 app = FastAPI(
     title="Mangas Baltigo API",
@@ -92,10 +103,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=WEBAPP_CORS_ORIGINS or ["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
 )
 
 init_offline_access_db()
@@ -114,7 +125,8 @@ async def _shutdown_cache_cleanup() -> None:
 
 
 class ProgressPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     title_id: str = Field(min_length=1)
     title_name: str = ""
     chapter_id: str = Field(min_length=1)
@@ -127,12 +139,14 @@ class ProgressPayload(BaseModel):
 
 
 class ProgressSyncPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     progress: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FavoritePayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     title_id: str = Field(min_length=1)
     title: str = ""
     display_title: str = ""
@@ -151,44 +165,53 @@ class FavoritePayload(BaseModel):
 
 
 class PreferencesPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     chapter_language: str = Field(min_length=1)
 
 
 class FavoritesSyncPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     favorites: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AffiliatePixPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     pix_key: str = Field(min_length=3, max_length=180)
 
 
 class AffiliateUserPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
 
 
 class AffiliateAccountPayload(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str = ""
+    init_data: str = ""
     full_name: str = Field(min_length=3, max_length=160)
     email: str = Field(min_length=5, max_length=180)
     phone: str = Field(min_length=8, max_length=80)
 
 
 class AffiliateAdminActionPayload(BaseModel):
-    admin_user_id: str = Field(min_length=1)
+    admin_user_id: str = ""
+    init_data: str = ""
     note: str = ""
 
 
 class AffiliateSettingPayload(BaseModel):
-    admin_user_id: str = Field(min_length=1)
+    admin_user_id: str = ""
+    init_data: str = ""
     key: str = Field(min_length=1)
     value: str = Field(min_length=1, max_length=80)
 
 
 _CACHE: dict[str, dict[str, Any]] = {}
 _CACHE_LOCK = asyncio.Lock()
+_RATE_LIMIT: dict[str, tuple[float, int]] = {}
+_RATE_LIMIT_LOCK = asyncio.Lock()
 _RECENT_TTL = 20
 _HOME_TTL = 25
 _TITLE_TTL = 90
@@ -200,6 +223,67 @@ _TITLE_OPEN_TIMEOUT = 22.0
 
 def _now() -> float:
     return time.time()
+
+
+def _safe_int_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    return raw if raw.isdigit() else ""
+
+
+def _validate_telegram_init_data(init_data: str) -> dict[str, Any]:
+    raw = str(init_data or "").strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="MiniApp sem initData do Telegram.")
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="BOT_TOKEN nao configurado para validar MiniApp.")
+
+    pairs = dict(parse_qsl(raw, keep_blank_values=True))
+    received_hash = pairs.pop("hash", "")
+    if not received_hash:
+        raise HTTPException(status_code=401, detail="initData sem assinatura.")
+
+    data_check_string = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, received_hash):
+        raise HTTPException(status_code=401, detail="initData invalido.")
+
+    auth_date = int(pairs.get("auth_date") or 0)
+    if auth_date and time.time() - auth_date > 86400:
+        raise HTTPException(status_code=401, detail="Sessao do MiniApp expirada.")
+
+    try:
+        user = json.loads(pairs.get("user") or "{}")
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Usuario do initData invalido.") from error
+    if not isinstance(user, dict) or not _safe_int_text(user.get("id")):
+        raise HTTPException(status_code=401, detail="Usuario do MiniApp nao identificado.")
+    return {"user": user, "query": pairs}
+
+
+def _request_init_data(request: Request, fallback: str = "") -> str:
+    return (
+        request.headers.get("x-telegram-init-data")
+        or request.query_params.get("init_data")
+        or fallback
+        or ""
+    )
+
+
+def _authenticated_user_id(request: Request, claimed_user_id: Any = "", init_data: str = "") -> str:
+    raw = _request_init_data(request, init_data)
+    if raw:
+        return str(_validate_telegram_init_data(raw)["user"]["id"])
+    claimed = _safe_int_text(claimed_user_id)
+    if WEBAPP_TRUST_QUERY_USER_ID and claimed:
+        return claimed
+    raise HTTPException(status_code=401, detail="Autenticacao do Telegram MiniApp obrigatoria.")
+
+
+def _authenticated_admin_id(request: Request, claimed_user_id: Any = "", init_data: str = "") -> str:
+    user_id = _authenticated_user_id(request, claimed_user_id, init_data)
+    _admin_required(user_id)
+    return user_id
 
 
 def _cache_key(namespace: str, **kwargs: Any) -> str:
@@ -226,6 +310,13 @@ async def _cache_set(namespace: str, value: Any, ttl: int, **kwargs: Any) -> Any
             "value": value,
             "expires_at": _now() + ttl,
         }
+        if len(_CACHE) > max(100, API_CACHE_MAX_ENTRIES):
+            expired_or_old = sorted(
+                _CACHE.items(),
+                key=lambda item: item[1].get("expires_at") or item[1].get("soft_expires_at") or 0,
+            )
+            for old_key, _ in expired_or_old[: max(1, len(_CACHE) - API_CACHE_MAX_ENTRIES)]:
+                _CACHE.pop(old_key, None)
     return value
 
 
@@ -293,7 +384,9 @@ def _load_progress() -> dict[str, dict[str, Any]]:
 
 def _save_progress(data: dict[str, dict[str, Any]]) -> None:
     PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROGRESS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path = PROGRESS_PATH.with_suffix(PROGRESS_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, PROGRESS_PATH)
 
 
 def _progress_key(user_id: str, title_id: str) -> str:
@@ -753,7 +846,7 @@ def _cakto_secret_candidates(request: Request, payload: dict[str, Any]) -> list[
 def _cakto_secret_is_valid(request: Request, payload: dict[str, Any]) -> bool:
     expected = (CAKTO_WEBHOOK_SECRET or "").strip()
     if not expected:
-        return True
+        return not CAKTO_REQUIRE_WEBHOOK_SECRET
     return expected in _cakto_secret_candidates(request, payload)
 
 
@@ -826,10 +919,14 @@ async def _notify_cakto_user(result: dict[str, Any]) -> None:
 
 def _log_cakto_webhook_payload(payload: dict[str, Any], result: dict[str, Any] | None = None) -> None:
     path = Path(DATA_DIR) / "cakto_webhooks.jsonl"
+    redacted_payload = dict(payload)
+    for key in list(redacted_payload.keys()):
+        if any(token in str(key).lower() for token in ("secret", "token", "password", "pix", "document")):
+            redacted_payload[key] = "[redacted]"
     record = {
         "received_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
         "result": result or {},
-        "payload": payload,
+        "payload": redacted_payload,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -871,9 +968,19 @@ async def affiliate_root_slash():
     return FileResponse(AFFILIATE_APP_DIR / "index.html")
 
 
+@app.get("/app/affiliate")
+async def affiliate_app_alias():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
+@app.get("/app/affiliate/")
+async def affiliate_app_alias_slash():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
 @app.get("/affiliate/share/{user_id}")
 async def affiliate_share_preview(user_id: int):
-    bot_username = "MangasBaltigo_Bot"
+    bot_username = BOT_USERNAME or "MangasBaltigo_Bot"
     ref_url = f"https://t.me/{bot_username}?start=ref_{int(user_id)}"
     image_url = (
         "https://photo.chelpbot.me/AgACAgEAAxkBZ7DGAAFpse3x62wh4yTxu0BIhIPz12L_YwACMAxrGxpikUXp6-kJkxw_1QEAAwIAA3kAAzoE/photo.jpg"
@@ -907,7 +1014,8 @@ async def affiliate_share_preview(user_id: int):
 
 
 @app.get("/api/affiliate/summary")
-async def api_affiliate_summary(user_id: str = Query(...)):
+async def api_affiliate_summary(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
     summary = affiliate_summary(user_id)
     summary["available_formatted"] = cents_to_money(summary.get("available_cents"))
     summary["pending_formatted"] = cents_to_money(summary.get("pending_cents"))
@@ -919,70 +1027,77 @@ async def api_affiliate_summary(user_id: str = Query(...)):
 
 
 @app.get("/api/affiliate/commissions")
-async def api_affiliate_commissions(user_id: str = Query(...), limit: int = Query(60, ge=1, le=200)):
+async def api_affiliate_commissions(request: Request, user_id: str = Query(""), limit: int = Query(60, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
     return {"items": [_money_fields(item) for item in list_commissions(user_id, limit=limit)]}
 
 
 @app.get("/api/affiliate/withdrawals")
-async def api_affiliate_withdrawals(user_id: str = Query(...), limit: int = Query(40, ge=1, le=200)):
+async def api_affiliate_withdrawals(request: Request, user_id: str = Query(""), limit: int = Query(40, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
     return {"items": [_money_fields(item) for item in list_withdrawals(user_id, limit=limit)]}
 
 
 @app.post("/api/affiliate/pix")
-async def api_affiliate_pix(payload: AffiliatePixPayload):
-    return {"ok": True, "profile": set_pix_key(payload.user_id, payload.pix_key)}
+async def api_affiliate_pix(request: Request, payload: AffiliatePixPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    return {"ok": True, "profile": set_pix_key(user_id, payload.pix_key)}
 
 
 @app.post("/api/affiliate/account")
-async def api_affiliate_account(payload: AffiliateAccountPayload):
+async def api_affiliate_account(request: Request, payload: AffiliateAccountPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     try:
-        profile = complete_affiliate_account(payload.user_id, payload.full_name, payload.email, payload.phone)
+        profile = complete_affiliate_account(user_id, payload.full_name, payload.email, payload.phone)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "profile": profile}
 
 
 @app.post("/api/affiliate/withdrawals")
-async def api_affiliate_request_withdrawal(payload: AffiliateUserPayload):
+async def api_affiliate_request_withdrawal(request: Request, payload: AffiliateUserPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     try:
-        withdrawal = request_withdrawal(payload.user_id)
+        withdrawal = request_withdrawal(user_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "withdrawal": _money_fields(withdrawal)}
 
 
 @app.post("/api/affiliate/release")
-async def api_affiliate_release(payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_release(request: Request, payload: AffiliateAdminActionPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     return {"ok": True, "released": release_due_commissions()}
 
 
 @app.get("/api/affiliate/admin/overview")
-async def api_affiliate_admin_overview(admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_admin_overview(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return admin_overview()
 
 
 @app.get("/api/affiliate/admin/withdrawals")
 async def api_affiliate_admin_withdrawals(
-    admin_user_id: str = Query(...),
+    request: Request,
+    admin_user_id: str = Query(""),
     status: str = Query("pending"),
     limit: int = Query(100, ge=1, le=300),
 ):
-    _admin_required(admin_user_id)
+    _authenticated_admin_id(request, admin_user_id)
     return {"items": [_money_fields(item) for item in admin_list_withdrawals(status=status, limit=limit)]}
 
 
 @app.get("/api/affiliate/admin/affiliates")
 async def api_affiliate_admin_affiliates(
-    admin_user_id: str = Query(...),
+    request: Request,
+    admin_user_id: str = Query(""),
     q: str = Query(""),
     tier: str = Query("all"),
     status: str = Query("all"),
     sort: str = Query("sales"),
     limit: int = Query(200, ge=1, le=500),
 ):
-    _admin_required(admin_user_id)
+    _authenticated_admin_id(request, admin_user_id)
     return {
         "items": [
             _money_fields(item)
@@ -992,24 +1107,24 @@ async def api_affiliate_admin_affiliates(
 
 
 @app.get("/api/affiliate/admin/user/{user_id}")
-async def api_affiliate_admin_user(user_id: str, admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_admin_user(request: Request, user_id: str, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return admin_user_snapshot(user_id)
 
 
 @app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/pay")
-async def api_affiliate_admin_pay_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_admin_pay_withdrawal(request: Request, withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    admin_id = _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
-        withdrawal = pay_withdrawal(withdrawal_id, payload.admin_user_id)
+        withdrawal = pay_withdrawal(withdrawal_id, admin_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "withdrawal": _money_fields(withdrawal)}
 
 
 @app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/refuse")
-async def api_affiliate_admin_refuse_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_admin_refuse_withdrawal(request: Request, withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
         withdrawal = refuse_withdrawal(withdrawal_id, payload.note)
     except ValueError as error:
@@ -1018,14 +1133,14 @@ async def api_affiliate_admin_refuse_withdrawal(withdrawal_id: int, payload: Aff
 
 
 @app.get("/api/affiliate/settings")
-async def api_affiliate_settings(admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_settings(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return {"settings": get_settings()}
 
 
 @app.post("/api/affiliate/settings")
-async def api_affiliate_update_setting(payload: AffiliateSettingPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_update_setting(request: Request, payload: AffiliateSettingPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
         update_setting(payload.key, payload.value)
     except ValueError as error:
@@ -1089,10 +1204,13 @@ async def api_section(section_name: str, limit: int = Query(12, ge=1, le=24)):
 
 
 @app.get("/api/title/{title_id}")
-async def api_title(title_id: str, user_id: str = Query(""), lang: str = Query("")):
+async def api_title(request: Request, title_id: str, user_id: str = Query(""), lang: str = Query("")):
     try:
-        resolved_lang = normalize_language(lang) or get_user_language(user_id, PREFERRED_CHAPTER_LANG)
-        return await _title_payload(title_id, resolved_lang, user_id)
+        safe_user_id = ""
+        if user_id or _request_init_data(request):
+            safe_user_id = _authenticated_user_id(request, user_id)
+        resolved_lang = normalize_language(lang) or get_user_language(safe_user_id, PREFERRED_CHAPTER_LANG)
+        return await _title_payload(title_id, resolved_lang, safe_user_id)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -1114,16 +1232,20 @@ async def api_title_chapters(title_id: str, lang: str = Query(PREFERRED_CHAPTER_
 
 
 @app.get("/api/chapter/{chapter_id}")
-async def api_chapter(chapter_id: str, user_id: str = Query(""), lang: str = Query("")):
+async def api_chapter(request: Request, chapter_id: str, user_id: str = Query(""), lang: str = Query("")):
     try:
-        resolved_lang = normalize_language(lang) or get_user_language(user_id, PREFERRED_CHAPTER_LANG)
+        safe_user_id = ""
+        if user_id or _request_init_data(request):
+            safe_user_id = _authenticated_user_id(request, user_id)
+        resolved_lang = normalize_language(lang) or get_user_language(safe_user_id, PREFERRED_CHAPTER_LANG)
         return await _chapter_payload(chapter_id, resolved_lang)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/preferences")
-async def api_get_preferences(user_id: str = Query("")):
+async def api_get_preferences(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
     lang = get_user_language(user_id, PREFERRED_CHAPTER_LANG)
     return {
         "chapter_language": lang,
@@ -1132,20 +1254,23 @@ async def api_get_preferences(user_id: str = Query("")):
 
 
 @app.post("/api/preferences")
-async def api_save_preferences(payload: PreferencesPayload):
-    preference = set_user_language(payload.user_id, payload.chapter_language)
+async def api_save_preferences(request: Request, payload: PreferencesPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    preference = set_user_language(user_id, payload.chapter_language)
     await _invalidate_prefix("cache")
     return {"ok": True, "preferences": preference}
 
 
 @app.get("/api/progress")
-async def api_get_progress(user_id: str = Query(...), title_id: str = Query(...)):
+async def api_get_progress(request: Request, user_id: str = Query(""), title_id: str = Query(...)):
+    user_id = _authenticated_user_id(request, user_id)
     data = _load_progress()
     return _public_last_read(data.get(_progress_key(user_id, title_id))) or {}
 
 
 @app.get("/api/history")
-async def api_get_history(user_id: str = Query(...), limit: int = Query(80, ge=1, le=200)):
+async def api_get_history(request: Request, user_id: str = Query(""), limit: int = Query(80, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
     progress_data = _load_progress()
     items = get_recently_read(user_id, limit=limit)
     return {
@@ -1158,9 +1283,10 @@ async def api_get_history(user_id: str = Query(...), limit: int = Query(80, ge=1
 
 
 @app.post("/api/progress")
-async def api_save_progress(payload: ProgressPayload):
+async def api_save_progress(request: Request, payload: ProgressPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     data = _load_progress()
-    key = _progress_key(payload.user_id, payload.title_id)
+    key = _progress_key(user_id, payload.title_id)
     stored = payload.model_dump()
     if not stored.get("updated_at"):
         stored["updated_at"] = int(time.time() * 1000)
@@ -1168,7 +1294,7 @@ async def api_save_progress(payload: ProgressPayload):
     _save_progress(data)
 
     mark_chapter_read(
-        user_id=payload.user_id,
+        user_id=user_id,
         title_id=payload.title_id,
         chapter_id=payload.chapter_id,
         chapter_number=payload.chapter_number,
@@ -1181,7 +1307,8 @@ async def api_save_progress(payload: ProgressPayload):
 
 
 @app.post("/api/progress/sync")
-async def api_sync_progress(payload: ProgressSyncPayload):
+async def api_sync_progress(request: Request, payload: ProgressSyncPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     data = _load_progress()
     now_ms = int(time.time() * 1000)
 
@@ -1194,7 +1321,7 @@ async def api_sync_progress(payload: ProgressSyncPayload):
         if not title_id or not chapter_id:
             continue
 
-        key = _progress_key(payload.user_id, title_id)
+        key = _progress_key(user_id, title_id)
         current = data.get(key) or {}
         incoming_updated = _public_updated_at_ms(raw_item.get("updated_at") or now_ms)
         current_updated = _public_updated_at_ms(current.get("updated_at")) if current else 0
@@ -1202,7 +1329,7 @@ async def api_sync_progress(payload: ProgressSyncPayload):
             continue
 
         record = {
-            "user_id": payload.user_id,
+            "user_id": user_id,
             "title_id": title_id,
             "title_name": str(raw_item.get("title_name") or raw_item.get("title") or "").strip(),
             "chapter_id": chapter_id,
@@ -1217,7 +1344,7 @@ async def api_sync_progress(payload: ProgressSyncPayload):
 
         try:
             mark_chapter_read(
-                user_id=payload.user_id,
+                user_id=user_id,
                 title_id=title_id,
                 chapter_id=chapter_id,
                 chapter_number=record["chapter_number"],
@@ -1228,11 +1355,11 @@ async def api_sync_progress(payload: ProgressSyncPayload):
             pass
 
     _save_progress(data)
-    items = get_recently_read(payload.user_id, limit=200)
+    items = get_recently_read(user_id, limit=200)
     return {
         "ok": True,
         "items": [
-            _public_history_item(payload.user_id, item, data)
+            _public_history_item(user_id, item, data)
             for item in items
             if item.get("title_id") and item.get("chapter_id")
         ],
@@ -1240,24 +1367,27 @@ async def api_sync_progress(payload: ProgressSyncPayload):
 
 
 @app.get("/api/favorites")
-async def api_get_favorites(user_id: str = Query(...)):
+async def api_get_favorites(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
     return {"items": list_user_favorites(user_id, limit=200)}
 
 
 @app.post("/api/favorites")
-async def api_save_favorite(payload: FavoritePayload):
+async def api_save_favorite(request: Request, payload: FavoritePayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     if not payload.favorite:
-        remove_user_favorite(payload.user_id, payload.title_id)
-        return {"ok": True, "items": list_user_favorites(payload.user_id, limit=200)}
+        remove_user_favorite(user_id, payload.title_id)
+        return {"ok": True, "items": list_user_favorites(user_id, limit=200)}
 
     favorite = payload.model_dump(exclude={"favorite", "user_id"})
-    set_user_favorite(payload.user_id, favorite)
-    return {"ok": True, "items": list_user_favorites(payload.user_id, limit=200)}
+    set_user_favorite(user_id, favorite)
+    return {"ok": True, "items": list_user_favorites(user_id, limit=200)}
 
 
 @app.post("/api/favorites/sync")
-async def api_sync_favorites(payload: FavoritesSyncPayload):
-    return {"ok": True, "items": merge_user_favorites(payload.user_id, payload.favorites)}
+async def api_sync_favorites(request: Request, payload: FavoritesSyncPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    return {"ok": True, "items": merge_user_favorites(user_id, payload.favorites)}
 
 
 @app.post("/api/refresh")
@@ -1288,6 +1418,25 @@ async def root():
 @app.middleware("http")
 async def add_perf_headers(request: Request, call_next):
     start = time.perf_counter()
+    if request.url.path.startswith("/api/"):
+        ip = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        ip = ip or (request.client.host if request.client else "unknown")
+        bucket = int(time.time() // 60)
+        key = f"{ip}:{bucket}"
+        async with _RATE_LIMIT_LOCK:
+            _, count = _RATE_LIMIT.get(key, (bucket, 0))
+            count += 1
+            _RATE_LIMIT[key] = (bucket, count)
+            if len(_RATE_LIMIT) > 5000:
+                current_bucket = bucket
+                for old_key, (old_bucket, _) in list(_RATE_LIMIT.items()):
+                    if old_bucket < current_bucket - 2:
+                        _RATE_LIMIT.pop(old_key, None)
+        if count > max(30, API_RATE_LIMIT_PER_MINUTE):
+            return JSONResponse(
+                {"detail": "Muitas requisicoes. Tente novamente em instantes."},
+                status_code=429,
+            )
     no_cache_index = request.url.path in {"/", "/miniapp", "/miniapp/", "/miniapp/index.html"}
     if no_cache_index:
         request.scope["headers"] = [
