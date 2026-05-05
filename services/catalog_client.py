@@ -1608,18 +1608,41 @@ def _title_bundle_cache_key(title_ref: str, resolved_lang: str) -> str:
     return f"title-bundle:{title_ref if '/title-detail/' in title_ref else title_id or title_ref}:{resolved_lang}"
 
 
+def _chapter_list_payload(title_id: str) -> dict[str, Any]:
+    # MangaBall returns every translation in one payload; language filtering happens client-side.
+    return {"title_id": title_id, "userSettingsEnabled": "false"}
+
+
+def _chapter_list_cache_key(title_id: str) -> str:
+    return f"chapter-list:{title_id}:all"
+
+
+def _chapter_payload_with_preferred_language(chapter_payload: dict[str, Any], preferred_lang: str | None) -> dict[str, Any]:
+    preferred_lang = _clean(preferred_lang).lower() or PREFERRED_CHAPTER_LANG
+    chapters: list[dict[str, Any]] = []
+    for chapter in chapter_payload.get("chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        copy = dict(chapter)
+        copy["preferred_translation"] = _pick_translation(copy.get("translations") or [], preferred_lang)
+        chapters.append(copy)
+
+    return {
+        **chapter_payload,
+        "chapters": chapters,
+    }
+
+
 async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any]:
     title_id = _extract_title_id(title_id) or _clean(title_id)
     if not title_id:
         raise ValueError("title_id invalido para listar capitulos.")
 
     lang = _clean(lang).lower() or ""
-    cache_key = f"chapter-list:{title_id}:{lang}"
+    cache_key = _chapter_list_cache_key(title_id)
 
     async def _load():
-        payload: dict[str, Any] = {"title_id": title_id}
-        if lang:
-            payload["lang"] = lang
+        payload = _chapter_list_payload(title_id)
 
         referer = _TITLE_URL_CACHE.get(title_id) or _absolute_url(f"/title-detail/{title_id}/")
         first_error: Exception | None = None
@@ -1672,6 +1695,8 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
         result = await _dedup_fetch(cache_key, CHAPTERS_TTL, _load)
         if isinstance(result, dict) and result.get("partial"):
             _CACHE.pop(cache_key, None)
+        if isinstance(result, dict):
+            return _chapter_payload_with_preferred_language(result, lang)
         return result
     except Exception as error:
         print("[CATALOG][CHAPTERS_UNHANDLED]", title_id, repr(error))
@@ -1691,17 +1716,15 @@ async def get_chapter_list_fast(title_id: str, lang: str | None = None) -> dict[
         raise ValueError("title_id invalido para listar capitulos.")
 
     lang = _clean(lang).lower() or ""
-    full_cache_key = f"chapter-list:{title_id}:{lang}"
+    full_cache_key = _chapter_list_cache_key(title_id)
     cached = _cache_get(full_cache_key, CHAPTERS_TTL)
     if isinstance(cached, dict) and not cached.get("partial"):
-        return dict(cached)
+        return _chapter_payload_with_preferred_language(cached, lang)
 
-    cache_key = f"chapter-list-fast:{title_id}:{lang}"
+    cache_key = f"chapter-list-fast:{title_id}:all"
 
     async def _load():
-        payload: dict[str, Any] = {"title_id": title_id}
-        if lang:
-            payload["lang"] = lang
+        payload = _chapter_list_payload(title_id)
 
         try:
             response = await asyncio.wait_for(
@@ -1744,6 +1767,7 @@ async def get_chapter_list_fast(title_id: str, lang: str | None = None) -> dict[
         _CACHE.pop(cache_key, None)
     elif isinstance(result, dict):
         _cache_set(full_cache_key, result)
+        return _chapter_payload_with_preferred_language(result, lang)
     return result
 
 
@@ -1757,7 +1781,14 @@ def flatten_chapters(chapter_payload: dict[str, Any], preferred_lang: str | None
         chapters = list(reversed(chapters))
 
     for chapter in chapters:
-        translation = _pick_translation(chapter.get("translations") or [], preferred_lang) or chapter.get("preferred_translation")
+        translation = next(
+            (
+                item
+                for item in (chapter.get("translations") or [])
+                if _clean(item.get("language")).lower() == preferred_lang
+            ),
+            None,
+        )
         if not translation:
             continue
 
