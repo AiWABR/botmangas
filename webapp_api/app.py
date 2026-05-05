@@ -56,6 +56,7 @@ from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
+from services.offline_messages import offline_welcome_message
 from services.language_prefs import (
     bundle_language_options,
     get_user_language,
@@ -898,6 +899,45 @@ async def _notify_cakto_user(result: dict[str, Any]) -> None:
         text = (
             "🔒 <b>Leitura offline bloqueada</b>\n\n"
             "A Cakto avisou cancelamento, reembolso ou chargeback dessa assinatura."
+        )
+    else:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": int(user_id),
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+    except Exception:
+        pass
+
+
+async def _notify_cakto_user(result: dict[str, Any]) -> None:
+    if not CAKTO_NOTIFY_USERS or not BOT_TOKEN:
+        return
+
+    access = result.get("access") or {}
+    if access.get("duplicate_event"):
+        return
+
+    user_id = result.get("user_id")
+    if not user_id:
+        return
+
+    action = result.get("action")
+    if action == "granted":
+        text = offline_welcome_message(access or result, source="payment")
+    elif action == "revoked":
+        text = (
+            "🔒 <b>Leitura offline bloqueada</b>\n\n"
+            "Recebemos um aviso de cancelamento, reembolso ou chargeback dessa assinatura.\n\n"
+            "Se você acredita que isso foi um engano, fale com o suporte."
         )
     else:
         return
