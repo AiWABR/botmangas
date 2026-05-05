@@ -37,6 +37,13 @@ from services.metrics import (
     log_event,
     mark_chapter_read,
 )
+from services.language_prefs import (
+    get_user_language,
+    language_badge,
+    language_options,
+    normalize_language,
+    set_user_language,
+)
 from services.telegraph_service import get_cached_chapter_page_url, get_or_create_chapter_page
 
 CALLBACK_COOLDOWN = 0.8
@@ -48,6 +55,10 @@ _USER_CALLBACK_LOCKS: dict[int, asyncio.Lock] = {}
 _MESSAGE_EDIT_LOCKS: dict[str, asyncio.Lock] = {}
 _MESSAGE_INFLIGHT_ACTIONS: dict[str, str] = {}
 _MESSAGE_PANEL_STATE: dict[str, tuple[str, str]] = {}
+
+
+def _user_lang(user_id: int | None) -> str:
+    return get_user_language(user_id, PREFERRED_CHAPTER_LANG)
 
 
 def _now() -> float:
@@ -195,8 +206,9 @@ def _fallback_title_bundle(title_id: str, *, title: str = "Manga", summary: dict
     }
 
 
-async def _load_title_panel_bundle(title_id: str) -> dict:
-    cached = get_cached_title_bundle(title_id) or get_cached_title_overview(title_id)
+async def _load_title_panel_bundle(title_id: str, lang: str | None = None) -> dict:
+    resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+    cached = get_cached_title_bundle(title_id, resolved_lang) or get_cached_title_overview(title_id)
     if cached is not None:
         return cached
 
@@ -232,6 +244,7 @@ def _miniapp_url(
     chapter_id: str = "",
     page: str = "",
     route: str = "",
+    lang: str = "",
     source: str = "bot",
 ) -> str:
     params: dict[str, str] = {"source": source}
@@ -254,6 +267,10 @@ def _miniapp_url(
         pg = str(page).strip()
         params["page"] = pg
         params["view"] = pg
+
+    resolved_lang = normalize_language(lang)
+    if resolved_lang:
+        params["lang"] = resolved_lang
 
     resolved_route = route.strip() if route else ""
     if not resolved_route:
@@ -309,6 +326,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
     rows: list[list[InlineKeyboardButton]] = []
     title_id = str(bundle.get("title_id") or "").strip()
     latest_chapter = bundle.get("latest_chapter") or {}
+    lang = _user_lang(user_id)
 
     primary_row: list[InlineKeyboardButton] = []
 
@@ -321,6 +339,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
                         title_id=title_id,
                         chapter_id=last_read["chapter_id"],
                         route="reader",
+                        lang=lang,
                     )
                 ),
             )
@@ -335,6 +354,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
                         title_id=title_id,
                         chapter_id=latest_chapter["chapter_id"],
                         route="reader",
+                        lang=lang,
                     )
                 ),
             )
@@ -352,11 +372,15 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
                         title_id=title_id,
                         page="chapters",
                         route="chapters",
+                        lang=lang,
                     )
                 ),
             )
         ]
     )
+
+    if title_id:
+        rows.append([InlineKeyboardButton(f"🌐 Idioma: {language_badge(lang)}", callback_data=f"mb|lang|{title_id}")])
 
     if bundle.get("anilist_url"):
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
@@ -364,6 +388,40 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
     if title_id:
         rows.append([InlineKeyboardButton("📥 Ler offline", callback_data=f"mb|offline|{title_id}")])
 
+    return InlineKeyboardMarkup(rows)
+
+
+def _language_text(bundle: dict, user_id: int | None) -> str:
+    title = html.escape(bundle.get("title") or "Manga")
+    current = html.escape(language_badge(_user_lang(user_id)))
+    options = language_options(bundle.get("languages") or [])
+    total = len(options)
+    return (
+        f"🌐 <b>Escolha o idioma dos capítulos</b>\n\n"
+        f"» <b>Obra:</b> <i>{title}</i>\n"
+        f"» <b>Atual:</b> <i>{current}</i>\n"
+        f"» <b>Disponíveis:</b> <i>{total}</i>\n\n"
+        "Depois de escolher, as listas, leitura online, PDF e EPUB passam a usar esse idioma."
+    )
+
+
+def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarkup:
+    title_id = str(bundle.get("title_id") or "").strip()
+    current = _user_lang(user_id)
+    rows: list[list[InlineKeyboardButton]] = []
+    line: list[InlineKeyboardButton] = []
+
+    for option in language_options(bundle.get("languages") or []):
+        code = option["code"]
+        prefix = "✅ " if code == current else ""
+        line.append(InlineKeyboardButton(f"{prefix}{option['badge']}", callback_data=f"mb|setlang|{title_id}|{code}"))
+        if len(line) == 2:
+            rows.append(line)
+            line = []
+    if line:
+        rows.append(line)
+
+    rows.append([InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -471,9 +529,10 @@ def _offline_chapters_keyboard(bundle: dict, chapters: list[dict], page: int) ->
     return InlineKeyboardMarkup(rows)
 
 
-def _chapter_page_for(title_id: str, chapter_id: str, fallback_page: int = 1) -> int:
-    bundle = get_cached_title_bundle(title_id)
-    chapters = flatten_chapters({"chapters": (bundle or {}).get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+def _chapter_page_for(title_id: str, chapter_id: str, fallback_page: int = 1, lang: str | None = None) -> int:
+    resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+    bundle = get_cached_title_bundle(title_id, resolved_lang)
+    chapters = flatten_chapters({"chapters": (bundle or {}).get("chapters") or []}, resolved_lang)
     for index, item in enumerate(chapters):
         if str(item.get("chapter_id") or "") == str(chapter_id or ""):
             return (index // CHAPTERS_PER_PAGE) + 1
@@ -497,7 +556,8 @@ def _offline_chapter_text(chapter: dict) -> str:
 def _offline_chapter_keyboard(chapter: dict, page: int = 1) -> InlineKeyboardMarkup:
     title_id = str(chapter.get("title_id") or "").strip()
     chapter_id = str(chapter.get("chapter_id") or "").strip()
-    page = _chapter_page_for(title_id, chapter_id, page)
+    lang = normalize_language(chapter.get("chapter_language")) or PREFERRED_CHAPTER_LANG
+    page = _chapter_page_for(title_id, chapter_id, page, lang)
 
     rows: list[list[InlineKeyboardButton]] = [
         [
@@ -514,7 +574,7 @@ def _offline_chapter_keyboard(chapter: dict, page: int = 1) -> InlineKeyboardMar
         nav.append(
             InlineKeyboardButton(
                 "⬅️ Anterior",
-                callback_data=f"mb|offread|{prev_id}|{_chapter_page_for(title_id, prev_id, page)}",
+                callback_data=f"mb|offread|{prev_id}|{_chapter_page_for(title_id, prev_id, page, lang)}",
             )
         )
     if next_chapter.get("chapter_id"):
@@ -522,7 +582,7 @@ def _offline_chapter_keyboard(chapter: dict, page: int = 1) -> InlineKeyboardMar
         nav.append(
             InlineKeyboardButton(
                 "Próximo ➡️",
-                callback_data=f"mb|offread|{next_id}|{_chapter_page_for(title_id, next_id, page)}",
+                callback_data=f"mb|offread|{next_id}|{_chapter_page_for(title_id, next_id, page, lang)}",
             )
         )
     if nav:
@@ -612,7 +672,7 @@ async def _send_offline_locked(target, bundle: dict, user_id: int | None) -> Non
         pass
 
 
-def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
+def _chapter_list_text(bundle: dict, page: int, total_items: int, lang: str = "") -> str:
     total_pages = max(1, ((total_items - 1) // CHAPTERS_PER_PAGE) + 1)
     if bundle.get("chapters_partial") and total_items <= 0:
         return (
@@ -624,6 +684,7 @@ def _chapter_list_text(bundle: dict, page: int, total_items: int) -> str:
     return (
         f"📖 <b>{html.escape(bundle.get('title') or 'Manga')}</b>\n\n"
         f"» <b>Página:</b> <i>{page}/{total_pages}</i>\n"
+        f"» <b>Idioma:</b> <i>{html.escape(language_badge(lang or PREFERRED_CHAPTER_LANG))}</i>\n"
         f"» <b>Capítulos disponíveis:</b> <i>{total_items}</i>\n\n"
         "Toque em um capítulo abaixo.\n"
         "✅ = capítulo já lido"
@@ -635,7 +696,7 @@ def _chapter_button_label(item: dict, read_ids: set[str]) -> str:
     return f"✅ {number}" if item.get("chapter_id") in read_ids else number
 
 
-def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_ids: set[str]) -> InlineKeyboardMarkup:
+def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_ids: set[str], lang: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     total_items = len(chapters)
     total_pages = max(1, ((total_items - 1) // CHAPTERS_PER_PAGE) + 1)
@@ -653,6 +714,7 @@ def _chapter_list_keyboard(bundle: dict, chapters: list[dict], page: int, read_i
                         title_id=bundle["title_id"],
                         chapter_id=item["chapter_id"],
                         route="reader",
+                        lang=lang,
                     )
                 ),
             )
@@ -959,7 +1021,8 @@ async def _auto_finalize_title_panel(
             return
 
         last_read = await run_sync(get_last_read_entry, user_id, bundle_title_id) if user_id else None
-        chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+        lang = _user_lang(user_id)
+        chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
         latest = bundle.get("latest_chapter") or {}
         chapter_ids = [latest.get("chapter_id") or ""]
         chapter_ids.extend(item.get("chapter_id") or "" for item in chapters[:3])
@@ -1005,7 +1068,8 @@ async def _auto_finalize_offline_panel(
         if kind != "offline" or ref != bundle_title_id:
             return
 
-        chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+        lang = _user_lang(user_id)
+        chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
         await _render_panel_to_message(
             context,
             chat_id=chat_id,
@@ -1017,17 +1081,18 @@ async def _auto_finalize_offline_panel(
 
 
 async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
-    bundle = await _load_title_panel_bundle(title_id)
+    lang = _user_lang(user_id)
+    bundle = await _load_title_panel_bundle(title_id, lang)
 
     refresh_tasks = []
     if bundle.get("chapters_partial") or not bundle.get("chapters"):
-        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id)))
+        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id, lang)))
     if bundle.get("chapters_partial") or not bundle.get("chapters") or bundle.get("metadata_partial"):
-        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id)))
+        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id, lang)))
 
     last_read = await run_sync(get_last_read_entry, user_id, bundle["title_id"]) if user_id else None
 
-    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
     if bundle.get("chapters"):
         latest = bundle.get("latest_chapter") or {}
         chapter_ids = [latest.get("chapter_id") or ""]
@@ -1056,21 +1121,42 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
             fire_and_forget(_auto_finalize_title_panel(context, panel_message, bundle["title_id"], user_id, refresh_task))
 
 
-async def _load_offline_bundle(title_id: str) -> tuple[dict, list[asyncio.Task]]:
-    bundle = get_cached_title_bundle(title_id)
+async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
+    lang = _user_lang(user_id)
+    bundle = await _load_title_panel_bundle(title_id, lang)
+    if not bundle.get("languages") or bundle.get("chapters_partial"):
+        try:
+            bundle = await asyncio.wait_for(get_title_bundle(title_id, lang), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+        except Exception:
+            pass
+
+    panel_message = await _render_panel(
+        target,
+        _language_text(bundle, user_id),
+        _language_keyboard(bundle, user_id),
+        _pick_bundle_image(bundle),
+        edit=edit,
+    )
+    if panel_message:
+        _set_panel_state(panel_message.chat.id, panel_message.message_id, "language", bundle["title_id"])
+
+
+async def _load_offline_bundle(title_id: str, lang: str | None = None) -> tuple[dict, list[asyncio.Task]]:
+    resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+    bundle = get_cached_title_bundle(title_id, resolved_lang)
     if bundle is None:
         try:
-            bundle = await asyncio.wait_for(get_title_chapters_snapshot(title_id), timeout=4.8)
+            bundle = await asyncio.wait_for(get_title_chapters_snapshot(title_id, resolved_lang), timeout=4.8)
         except Exception as error:
             print("[OFFLINE_CHAPTERS][FAST_FALLBACK]", title_id, repr(error))
             bundle = _fallback_title_bundle(title_id)
 
     refresh_tasks = []
     if bundle.get("chapters_partial") or not bundle.get("chapters"):
-        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id)))
-        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id)))
+        refresh_tasks.append(fire_and_forget(get_title_chapters_snapshot(title_id, resolved_lang)))
+        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id, resolved_lang)))
     elif bundle.get("metadata_partial"):
-        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id)))
+        refresh_tasks.append(fire_and_forget(get_title_bundle(title_id, resolved_lang)))
 
     return bundle, refresh_tasks
 
@@ -1084,13 +1170,14 @@ async def send_offline_chapters_page(
     *,
     edit: bool,
 ):
-    bundle, refresh_tasks = await _load_offline_bundle(title_id)
+    lang = _user_lang(user_id)
+    bundle, refresh_tasks = await _load_offline_bundle(title_id, lang)
 
     if not can_use_pdf_bulk(user_id):
         await _send_offline_locked(target, bundle, user_id)
         return
 
-    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
     total_pages = max(1, ((len(chapters) - 1) // CHAPTERS_PER_PAGE) + 1)
     page = max(1, min(int(page or 1), total_pages))
 
@@ -1112,7 +1199,8 @@ async def send_offline_panel(target, context: ContextTypes.DEFAULT_TYPE, title_i
 
 
 async def send_offline_bulk_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
-    bundle = get_cached_title_bundle(title_id) or _fallback_title_bundle(title_id)
+    lang = _user_lang(user_id)
+    bundle = get_cached_title_bundle(title_id, lang) or _fallback_title_bundle(title_id)
 
     if not can_use_pdf_bulk(user_id):
         await _send_offline_locked(target, bundle, user_id)
@@ -1131,7 +1219,7 @@ async def send_offline_bulk_panel(target, context: ContextTypes.DEFAULT_TYPE, ti
 
 async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int):
     if not cakto_api_configured():
-        await _send_offline_locked(target, await get_title_bundle(title_id), user_id)
+        await _send_offline_locked(target, await get_title_bundle(title_id, _user_lang(user_id)), user_id)
         message = getattr(target, "message", None)
         try:
             await (message.reply_text if message else target.reply_text)(
@@ -1178,16 +1266,17 @@ async def verify_offline_payment_panel(target, context: ContextTypes.DEFAULT_TYP
 
 
 async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, page: int, user_id: int | None, *, edit: bool):
-    bundle = get_cached_title_bundle(title_id)
+    lang = _user_lang(user_id)
+    bundle = get_cached_title_bundle(title_id, lang)
     if bundle is None:
         try:
-            bundle = await asyncio.wait_for(get_title_bundle(title_id), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+            bundle = await asyncio.wait_for(get_title_bundle(title_id, lang), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
         except Exception as error:
             print("[CHAPTER_PANEL][FAST_FALLBACK]", title_id, repr(error))
-            prefetch_title_bundles([title_id], limit=1)
+            prefetch_title_bundles([title_id], lang=lang, limit=1)
             bundle = _fallback_title_bundle(title_id)
 
-    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, PREFERRED_CHAPTER_LANG)
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
     read_ids = set(await run_sync(get_read_chapter_ids, user_id, bundle["title_id"])) if user_id else set()
 
     total_pages = max(1, ((len(chapters) - 1) // CHAPTERS_PER_PAGE) + 1)
@@ -1201,8 +1290,8 @@ async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_i
 
     panel_message = await _render_panel(
         target,
-        _chapter_list_text(bundle, page, len(chapters)),
-        _chapter_list_keyboard(bundle, chapters, page, read_ids),
+        _chapter_list_text(bundle, page, len(chapters), lang),
+        _chapter_list_keyboard(bundle, chapters, page, read_ids, lang),
         _pick_bundle_image(bundle),
         edit=edit,
     )
@@ -1211,15 +1300,16 @@ async def send_chapters_page(target, context: ContextTypes.DEFAULT_TYPE, title_i
 
 
 async def send_chapter_panel(target, context: ContextTypes.DEFAULT_TYPE, chapter_id: str, user_id: int | None, *, edit: bool):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+    lang = _user_lang(user_id)
+    chapter = get_cached_chapter_reader_payload(chapter_id, lang) or await get_chapter_reader_payload(chapter_id, lang)
 
     adjacent_refs = [
         (chapter.get("previous_chapter") or {}).get("chapter_id") or "",
         (chapter.get("next_chapter") or {}).get("chapter_id") or "",
     ]
-    prefetch_reader_payloads(adjacent_refs, limit=2)
+    prefetch_reader_payloads(adjacent_refs, lang=lang, limit=2)
 
-    fire_and_forget(get_title_bundle(chapter["title_id"]))
+    fire_and_forget(get_title_bundle(chapter["title_id"], lang))
 
     if user_id:
         fire_and_forget_sync(
@@ -1286,13 +1376,14 @@ async def send_offline_chapter_panel(
         await _safe_answer_query(target, "Função liberada só para assinantes.", show_alert=True)
         return
 
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+    lang = _user_lang(user_id)
+    chapter = get_cached_chapter_reader_payload(chapter_id, lang) or await get_chapter_reader_payload(chapter_id, lang)
     adjacent_refs = [
         (chapter.get("previous_chapter") or {}).get("chapter_id") or "",
         (chapter.get("next_chapter") or {}).get("chapter_id") or "",
     ]
-    prefetch_reader_payloads(adjacent_refs, limit=2)
-    fire_and_forget(get_title_bundle(chapter["title_id"]))
+    prefetch_reader_payloads(adjacent_refs, lang=lang, limit=2)
+    fire_and_forget(get_title_bundle(chapter["title_id"], lang))
 
     panel_message = await _render_panel(
         target,
@@ -1306,7 +1397,8 @@ async def send_offline_chapter_panel(
 
 
 async def _send_telegraph(query, chapter_id: str):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+    lang = _user_lang(getattr(getattr(query, "from_user", None), "id", None))
+    chapter = get_cached_chapter_reader_payload(chapter_id, lang) or await get_chapter_reader_payload(chapter_id, lang)
     url = await get_or_create_chapter_page(
         chapter_id=chapter["chapter_id"],
         title=_chapter_telegraph_title(chapter),
@@ -1324,7 +1416,8 @@ async def _send_telegraph(query, chapter_id: str):
 
 
 async def _enqueue_pdf(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: str):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+    lang = _user_lang(getattr(getattr(query, "from_user", None), "id", None))
+    chapter = get_cached_chapter_reader_payload(chapter_id, lang) or await get_chapter_reader_payload(chapter_id, lang)
     await enqueue_pdf_job(
         context.application,
         PdfJob(
@@ -1344,7 +1437,8 @@ async def _enqueue_pdf(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: st
 
 
 async def _enqueue_epub(query, context: ContextTypes.DEFAULT_TYPE, chapter_id: str):
-    chapter = get_cached_chapter_reader_payload(chapter_id) or await get_chapter_reader_payload(chapter_id)
+    lang = _user_lang(getattr(getattr(query, "from_user", None), "id", None))
+    chapter = get_cached_chapter_reader_payload(chapter_id, lang) or await get_chapter_reader_payload(chapter_id, lang)
     tag = html.escape(DISTRIBUTION_TAG or "")
     await enqueue_epub_job(
         context.application,
@@ -1419,6 +1513,23 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if action == "title" and len(parts) >= 3:
                     await _safe_answer_query(query)
                     await _show_loading_markup(query, "⏳ Abrindo obra")
+                    await send_title_panel(query, context, parts[2], user_id, edit=True)
+                    return
+
+                if action == "lang" and len(parts) >= 3:
+                    await _safe_answer_query(query)
+                    await _show_loading_markup(query, "⏳ Carregando idiomas")
+                    await send_language_panel(query, context, parts[2], user_id, edit=True)
+                    return
+
+                if action == "setlang" and len(parts) >= 4:
+                    lang = normalize_language(parts[3])
+                    if not lang:
+                        await _safe_answer_query(query, "Idioma inválido.", show_alert=True)
+                        return
+                    set_user_language(user_id, lang)
+                    await _safe_answer_query(query, f"Idioma alterado para {language_badge(lang)}.", show_alert=False)
+                    await _show_loading_markup(query, "⏳ Atualizando obra")
                     await send_title_panel(query, context, parts[2], user_id, edit=True)
                     return
 
@@ -1508,6 +1619,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         user_id=user_id,
                         title_ref=parts[2],
                         order=normalize_pdf_bulk_order(parts[3] if len(parts) >= 4 else "asc"),
+                        lang=_user_lang(user_id),
                     )
                     return
 
