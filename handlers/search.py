@@ -125,9 +125,11 @@ def _build_search_text(query: str, page: int, total: int) -> str:
     total_pages = max(1, ((total - 1) // RESULTS_PER_PAGE) + 1)
     return (
         "🔎 <b>Resultado da busca</b>\n\n"
+        "<blockquote>"
         f"📚 <b>Pesquisa:</b> {html.escape(query)}\n"
         f"📄 <b>Página:</b> {page}/{total_pages}\n"
-        f"📦 <b>Resultados:</b> {total}\n\n"
+        f"📦 <b>Resultados:</b> {total}"
+        "</blockquote>\n\n"
         "Toque em uma obra abaixo para abrir."
     )
 
@@ -282,9 +284,9 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type != "private":
         await message.reply_text(
-            "🔒 <b>Esse comando so funciona no privado.</b>\n\n"
-            "Me chama no PV e envie:\n"
-            "<code>/buscar nome do manga</code>",
+            "🔒 <b>Esse comando só funciona no privado.</b>\n\n"
+            "Me chama no privado e envie:\n"
+            "<code>/buscar nome do mangá</code>",
             parse_mode="HTML",
         )
         return
@@ -292,9 +294,9 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = _normalize_query(" ".join(context.args or []))
     if not query:
         await message.reply_text(
-            "🔎 <b>Como buscar um manga</b>\n\n"
+            "🔎 <b>Como buscar um mangá</b>\n\n"
             "Envie no formato:\n"
-            "<code>/buscar nome do manga</code>",
+            "<code>/buscar nome do mangá</code>",
             parse_mode="HTML",
         )
         return
@@ -315,7 +317,7 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if _is_inflight(user.id, query):
         await message.reply_text(
-            "⏳ <b>Essa busca ja esta sendo processada.</b>",
+            "⏳ <b>Essa busca já está sendo processada.</b>",
             parse_mode="HTML",
         )
         return
@@ -324,7 +326,7 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with lock:
         if _is_inflight(user.id, query):
             await message.reply_text(
-                "⏳ <b>Essa busca ja esta sendo processada.</b>",
+                "⏳ <b>Essa busca já está sendo processada.</b>",
                 parse_mode="HTML",
             )
             return
@@ -339,7 +341,7 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 results = cached_results
             else:
                 loading = await message.reply_text(
-                    "🔎 <b>Buscando mangas...</b>\nAguarde um instante.",
+                    "🔎 <b>Buscando mangás...</b>\n<i>Aguarde um instante.</i>",
                     parse_mode="HTML",
                 )
                 results = await asyncio.wait_for(search_titles(query), timeout=SEARCH_TIMEOUT)
@@ -364,11 +366,11 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 edited = await _safe_edit_loading(
                     loading,
-                    "❌ <b>Nenhum manga encontrado.</b>\n\nTente outro nome ou uma variacao do titulo.",
+                    "❌ <b>Nenhum mangá encontrado.</b>\n\nTente outro nome ou uma variação do titulo.",
                 )
                 if not edited:
                     await message.reply_text(
-                        "❌ <b>Nenhum manga encontrado.</b>\n\nTente outro nome ou uma variacao do titulo.",
+                        "❌ <b>Nenhum mangá encontrado.</b>\n\nTente outro nome ou uma variação do titulo.",
                         parse_mode="HTML",
                     )
                 return
@@ -378,11 +380,11 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not rendered:
                 edited = await _safe_edit_loading(
                     loading,
-                    "❌ <b>Essa busca expirou.</b>\n\nFaz outra busca pra continuar.",
+                    "❌ <b>Essa busca expirou.</b>\n\nFaça outra busca pra continuar.",
                 )
                 if not edited:
                     await message.reply_text(
-                        "❌ <b>Essa busca expirou.</b>\n\nFaz outra busca pra continuar.",
+                        "❌ <b>Essa busca expirou.</b>\n\nFaça outra busca pra continuar.",
                         parse_mode="HTML",
                     )
                 return
@@ -404,11 +406,11 @@ async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print("ERRO BUSCA MANGA:", repr(error))
             edited = await _safe_edit_loading(
                 loading,
-                "❌ <b>Nao consegui concluir a busca agora.</b>\n\nTente novamente em instantes.",
+                "❌ <b>Não consegui concluir a busca agora.</b>\n\nTente novamente em instantes.",
             )
             if not edited:
                 await message.reply_text(
-                    "❌ <b>Nao consegui concluir a busca agora.</b>\n\nTente novamente em instantes.",
+                    "❌ <b>Não consegui concluir a busca agora.</b>\n\nTente novamente em instantes.",
                     parse_mode="HTML",
                 )
         finally:
