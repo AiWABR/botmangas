@@ -21,7 +21,6 @@ from handlers.search import edit_search_page, render_search_page
 from handlers.language import handle_language_callback
 from services.catalog_client import (
     flatten_chapters,
-    get_cached_chapter_list,
     get_cached_chapter_reader_payload,
     get_cached_title_overview,
     get_cached_title_bundle,
@@ -127,6 +126,19 @@ def _set_panel_state(chat_id: int, message_id: int, kind: str, ref: str) -> None
 
 def _get_panel_state(chat_id: int, message_id: int) -> tuple[str, str]:
     return _MESSAGE_PANEL_STATE.get(_message_action_key(chat_id, message_id), ("", ""))
+
+
+def _get_cached_chapter_list_compat(title_id: str, lang: str | None = None) -> dict | None:
+    try:
+        from services import catalog_client
+
+        getter = getattr(catalog_client, "get_cached_chapter_list", None)
+        if not callable(getter):
+            return None
+        cached = getter(title_id, lang)
+        return cached if isinstance(cached, dict) else None
+    except Exception:
+        return None
 
 
 def _is_callback_cooldown(context: ContextTypes.DEFAULT_TYPE, user_id: int, data: str) -> bool:
@@ -1204,7 +1216,7 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     lang = _user_lang(user_id)
     bundle = await _load_title_panel_bundle(title_id, lang)
-    cached_chapters = get_cached_chapter_list(title_id, "")
+    cached_chapters = _get_cached_chapter_list_compat(title_id, "")
     if cached_chapters and (cached_chapters.get("chapters") or cached_chapters.get("languages")):
         bundle = {
             **bundle,
