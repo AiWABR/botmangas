@@ -6,10 +6,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppI
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from config import BOT_BRAND, BOT_USERNAME, PROMO_BANNER_URL, WEBAPP_BASE_URL
+from config import BOT_BRAND, BOT_USERNAME, WEBAPP_BASE_URL
 from core.background import fire_and_forget_sync, run_sync
 from handlers.callbacks import send_chapter_panel, send_chapters_page, send_title_panel
 from services.catalog_client import get_cached_home_snapshot, schedule_warm_catalog_cache
+from services.i18n import t_user
 from services.metrics import mark_user_seen
 from services.referral_db import (
     create_referral,
@@ -41,20 +42,8 @@ def _extract_chapter_id(arg: str) -> str:
     for prefix in ("ch_", "cap_", "read_"):
         if arg.startswith(prefix):
             raw = arg[len(prefix):]
-            if "_" in raw:
-                return raw.split("_", 1)[0].strip()
-            return raw.strip()
+            return raw.split("_", 1)[0].strip() if "_" in raw else raw.strip()
     return ""
-
-
-def _referral_feedback(reason: str) -> str:
-    if reason == "self":
-        return "Seu proprio link de convite nao conta."
-    if reason == "already_same":
-        return "Esse convite ja estava associado ao mesmo link."
-    if reason == "exists":
-        return "Voce ja entrou no bot por outro convite."
-    return "Convite registrado com sucesso."
 
 
 def _safe_user_lock(user_id: int) -> asyncio.Lock:
@@ -104,10 +93,8 @@ def _is_start_cooldown(context: ContextTypes.DEFAULT_TYPE, user_id: int, payload
     now = _now()
     last_ts = context.user_data.get(_start_last_key(user_id), 0.0)
     last_payload = context.user_data.get(_start_last_payload_key(user_id), "")
-
     if payload and payload == last_payload and (now - last_ts) < START_COOLDOWN:
         return True
-
     context.user_data[_start_last_key(user_id)] = now
     context.user_data[_start_last_payload_key(user_id)] = payload
     return False
@@ -148,28 +135,10 @@ async def _safe_edit_message(message, text: str) -> None:
         pass
 
 
-async def _send_start_loading(message, *, kind: str):
-    if kind == "chapter":
-        text = (
-            "⏳ <b>Abrindo capitulo no acervo...</b>\n\n"
-            "» <b>Status:</b> <i>carregando leitura</i>\n"
-            "✨ <i>Aguarde um instante.</i>"
-        )
-    elif kind == "chapters":
-        text = (
-            "⏳ <b>Abrindo lista de capítulos...</b>\n\n"
-            "» <b>Status:</b> <i>carregando acervo</i>\n"
-            "✨ <i>Aguarde um instante.</i>"
-        )
-    else:
-        text = (
-            "⏳ <b>Abrindo nosso acervo...</b>\n\n"
-            "» <b>Status:</b> <i>carregando obra</i>\n"
-            "✨ <i>Aguarde um instante.</i>"
-        )
-
+async def _send_start_loading(message, user_id: int, *, kind: str):
+    key = "start.loading_chapter" if kind == "chapter" else "start.loading_title"
     try:
-        return await message.reply_text(text, parse_mode="HTML")
+        return await message.reply_text(t_user(user_id, key), parse_mode="HTML")
     except Exception:
         return None
 
@@ -182,55 +151,59 @@ async def _handle_referral(arg: str, user, message) -> None:
 
     await run_sync(register_referral_click, referrer_id, user.id)
     ok, reason = await run_sync(create_referral, referrer_id, user.id)
-
-    text = _referral_feedback(reason)
     if ok:
-        text = "Seu convite foi registrado. Continue usando o bot que a indicacao entra em analise."
+        text = t_user(user.id, "start.ref_ok")
+    elif reason == "self":
+        text = t_user(user.id, "start.ref_self")
+    elif reason == "already_same":
+        text = t_user(user.id, "start.ref_already_same")
+    elif reason == "exists":
+        text = t_user(user.id, "start.ref_exists")
+    else:
+        text = t_user(user.id, "common.generic_error")
+    await message.reply_text(text, parse_mode="HTML")
 
-    await message.reply_text(text)
+
+def _miniapp_title_url(title_id: str) -> str:
+    base = (WEBAPP_BASE_URL or "").rstrip("/")
+    return f"{base}/miniapp/index.html?title_id={title_id}" if base else ""
 
 
-async def _send_welcome(message, first_name: str) -> None:
+async def _send_welcome(message, user_id: int, first_name: str) -> None:
     snapshot = get_cached_home_snapshot(limit=4)
     featured = snapshot.get("featured") or []
     schedule_warm_catalog_cache()
-    inline_hint = f"@{BOT_USERNAME} solo leveling" if BOT_USERNAME else "/buscar solo leveling"
 
-    keyboard_rows = [
-        [InlineKeyboardButton("🔎 Buscar mangás", switch_inline_query_current_chat="")],
+    keyboard_rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(t_user(user_id, "common.search"), switch_inline_query_current_chat="")],
+        [
+            InlineKeyboardButton(t_user(user_id, "common.language"), callback_data="mb|uilangmenu"),
+            InlineKeyboardButton(t_user(user_id, "common.plans"), callback_data="mb|plan"),
+        ],
     ]
 
     if BOT_USERNAME:
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton("🎁 Indicações", callback_data="noop_indicar"),
-            ]
-        )
+        keyboard_rows.append([InlineKeyboardButton(t_user(user_id, "common.referrals"), callback_data="noop_indicar")])
 
     for item in featured[:4]:
+        title_id = str(item.get("title_id") or "").strip()
+        url = _miniapp_title_url(title_id)
+        if not title_id or not url:
+            continue
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    f"📘 {item.get('title') or 'Manga'}",
-                    web_app=WebAppInfo(
-                        url=f"{WEBAPP_BASE_URL}/miniapp/index.html?title_id={item.get('title_id')}"
-                    ),
+                    f"📘 {item.get('title') or 'Mangá'}",
+                    web_app=WebAppInfo(url=url),
                 )
             ]
         )
 
-    safe_name = html.escape(first_name or "leitor")
-    safe_brand = html.escape(BOT_BRAND)
-    text = (
-        f"🎬 <b>Bem-vindo ao Mangás Baltigo, {safe_name}!</b>\n\n"
-        "Aqui você pode encontrar mangás, manhwas e manhuas de forma rápida, direto no Telegram.\n\n"
-        "✨ <b>O que você pode fazer aqui:</b>\n\n"
-        "<blockquote>"
-        "• 🔎 Encontra qualquer obra em segundos\n"
-        "• 📖 Lê capítulos sem dor de cabeça\n"
-        "• 📚 Acompanha suas obras favoritas"
-        "</blockquote>\n\n"
-        "<i>O catálogo está liberado para todos!</i>"
+    text = t_user(
+        user_id,
+        "start.welcome",
+        brand=html.escape(BOT_BRAND or "Mangas Baltigo"),
+        name=html.escape(first_name or "leitor"),
     )
 
     try:
@@ -252,42 +225,37 @@ async def _send_welcome(message, first_name: str) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     message = update.effective_message
-
     if not user or not message:
         return
 
     _queue_user_touch(user)
-
     if not await ensure_channel_membership(update, context):
         return
 
     arg = (context.args[0].strip() if context.args else "")
-
     if arg.startswith("ref_"):
         await _handle_referral(arg, user, message)
         arg = ""
 
     if arg and _is_start_cooldown(context, user.id, arg):
-        await message.reply_text("⏳ Aguarde um instante antes de repetir essa acao.")
+        await message.reply_text(t_user(user.id, "start.cooldown"), parse_mode="HTML")
         return
-
     if arg and _is_inflight(user.id, arg):
-        await message.reply_text("⏳ Essa solicitacao ja esta sendo processada.")
+        await message.reply_text(t_user(user.id, "start.duplicate"), parse_mode="HTML")
         return
 
     user_lock = _safe_user_lock(user.id)
     async with user_lock:
         if arg and _is_inflight(user.id, arg):
-            await message.reply_text("⏳ Essa solicitacao ja esta sendo processada.")
+            await message.reply_text(t_user(user.id, "start.duplicate"), parse_mode="HTML")
             return
-
         if arg:
             _set_inflight(user.id, arg)
 
         try:
             title_id = _extract_title_id(arg)
             if title_id:
-                loading_msg = await _send_start_loading(message, kind="title")
+                loading_msg = await _send_start_loading(message, user.id, kind="title")
                 try:
                     await asyncio.wait_for(
                         send_title_panel(message, context, title_id, user.id, edit=False),
@@ -295,24 +263,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await _safe_delete_message(loading_msg)
                 except asyncio.TimeoutError:
-                    await _safe_edit_message(
-                        loading_msg,
-                        (
-                            "⏳ <b>Essa obra demorou demais para abrir.</b>\n\n"
-                            "Tente novamente em instantes."
-                        ),
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "start.timeout"))
                 except Exception as error:
                     print("ERRO START OBRA:", repr(error))
-                    await _safe_edit_message(
-                        loading_msg,
-                        "❌ <b>Nao foi possivel abrir essa obra agora.</b>\n\nTente novamente em instantes.",
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "common.generic_error"))
                 return
 
             chapters_title_id = _extract_chapters_title_id(arg)
             if chapters_title_id:
-                loading_msg = await _send_start_loading(message, kind="chapters")
+                loading_msg = await _send_start_loading(message, user.id, kind="chapters")
                 try:
                     await asyncio.wait_for(
                         send_chapters_page(message, context, chapters_title_id, 1, user.id, edit=False),
@@ -320,24 +279,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await _safe_delete_message(loading_msg)
                 except asyncio.TimeoutError:
-                    await _safe_edit_message(
-                        loading_msg,
-                        (
-                            "⏳ <b>Essa lista demorou demais para abrir.</b>\n\n"
-                            "Tente novamente em instantes."
-                        ),
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "start.timeout"))
                 except Exception as error:
                     print("ERRO START LISTA CAPITULOS:", repr(error))
-                    await _safe_edit_message(
-                        loading_msg,
-                        "❌ <b>Não foi possível abrir a lista de capítulos agora.</b>\n\nTente novamente em instantes.",
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "common.generic_error"))
                 return
 
             chapter_id = _extract_chapter_id(arg)
             if chapter_id:
-                loading_msg = await _send_start_loading(message, kind="chapter")
+                loading_msg = await _send_start_loading(message, user.id, kind="chapter")
                 try:
                     await asyncio.wait_for(
                         send_chapter_panel(message, context, chapter_id, user.id, edit=False),
@@ -345,22 +295,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await _safe_delete_message(loading_msg)
                 except asyncio.TimeoutError:
-                    await _safe_edit_message(
-                        loading_msg,
-                        (
-                            "⏳ <b>Esse capitulo demorou demais para abrir.</b>\n\n"
-                            "Tente novamente em instantes."
-                        ),
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "start.timeout"))
                 except Exception as error:
                     print("ERRO START CAPITULO:", repr(error))
-                    await _safe_edit_message(
-                        loading_msg,
-                        "❌ <b>Nao foi possivel abrir esse capitulo agora.</b>\n\nTente novamente em instantes.",
-                    )
+                    await _safe_edit_message(loading_msg, t_user(user.id, "common.generic_error"))
                 return
 
-            await _send_welcome(message, user.first_name or "leitor")
+            await _send_welcome(message, user.id, user.first_name or "leitor")
         finally:
             if arg:
                 _clear_inflight(user.id, arg)
