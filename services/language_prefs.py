@@ -34,25 +34,58 @@ LANGUAGE_LABELS: dict[str, str] = {
 }
 
 LANGUAGE_FLAGS: dict[str, str] = {
-    "pt-br": "BR",
-    "pt": "PT",
-    "en": "EN",
-    "es": "ES",
-    "es-la": "LATAM",
-    "fr": "FR",
-    "de": "DE",
-    "it": "IT",
-    "ru": "RU",
-    "ja": "JP",
-    "ko": "KR",
-    "zh": "CN",
-    "zh-cn": "CN",
-    "zh-tw": "TW",
-    "id": "ID",
-    "th": "TH",
-    "vi": "VI",
-    "tr": "TR",
-    "pl": "PL",
+    "ar": "🇪🇬",
+    "bg": "🇧🇬",
+    "bn": "🇧🇩",
+    "ca": "🇪🇸",
+    "cs": "🇨🇿",
+    "da": "🇩🇰",
+    "de": "🇩🇪",
+    "el": "🇬🇷",
+    "en": "🇬🇧",
+    "es": "🇪🇸",
+    "es-ar": "🇦🇷",
+    "es-mx": "🇲🇽",
+    "es-es": "🇪🇸",
+    "es-la": "🌎",
+    "es-419": "🌎",
+    "fa": "🇮🇷",
+    "fi": "🇫🇮",
+    "fr": "🇫🇷",
+    "he": "🇮🇱",
+    "hi": "🇮🇳",
+    "hu": "🇭🇺",
+    "id": "🇮🇩",
+    "it": "🇮🇹",
+    "ja": "🇯🇵",
+    "jp": "🇯🇵",
+    "ko": "🇰🇷",
+    "kr": "🇰🇷",
+    "ms": "🇲🇾",
+    "nl": "🇳🇱",
+    "no": "🇳🇴",
+    "pl": "🇵🇱",
+    "pt": "🇵🇹",
+    "pt-br": "🇧🇷",
+    "pt-pt": "🇵🇹",
+    "ro": "🇷🇴",
+    "ru": "🇷🇺",
+    "sk": "🇸🇰",
+    "sl": "🇸🇮",
+    "sq": "🇦🇱",
+    "sr": "🇷🇸",
+    "sv": "🇸🇪",
+    "ta": "🇮🇳",
+    "th": "🇹🇭",
+    "tr": "🇹🇷",
+    "uk": "🇺🇦",
+    "vi": "🇻🇳",
+    "zh": "🇨🇳",
+    "zh-cn": "🇨🇳",
+    "zh-hk": "🇭🇰",
+    "zh-mo": "🇲🇴",
+    "zh-sg": "🇸🇬",
+    "zh-tw": "🇹🇼",
 }
 
 
@@ -79,9 +112,30 @@ def language_label(lang: str) -> str:
 
 def language_badge(lang: str) -> str:
     normalized = normalize_language(lang)
-    flag = LANGUAGE_FLAGS.get(normalized, normalized.upper())
+    flag = language_flag(normalized)
     label = language_label(normalized)
     return f"{flag} {label}".strip()
+
+
+def language_flag(lang: str) -> str:
+    normalized = normalize_language(lang)
+    if normalized in LANGUAGE_FLAGS:
+        return LANGUAGE_FLAGS[normalized]
+    base = normalized.split("-", 1)[0]
+    return LANGUAGE_FLAGS.get(base, "🏳️")
+
+
+def language_short_code(lang: str) -> str:
+    normalized = normalize_language(lang)
+    if not normalized:
+        return "??"
+    if normalized == "pt-br":
+        return "BR"
+    if normalized == "pt-pt":
+        return "PT"
+    if normalized == "es-419":
+        return "ES-LA"
+    return normalized.upper()
 
 
 def language_option(raw: Any) -> dict[str, str] | None:
@@ -108,6 +162,8 @@ def language_option(raw: Any) -> dict[str, str] | None:
         "code": code,
         "label": label or language_label(code),
         "badge": language_badge(code),
+        "flag": language_flag(code),
+        "short": language_short_code(code),
     }
 
 
