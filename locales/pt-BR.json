@@ -29,7 +29,9 @@
     "duplicate": "⏳ Essa solicitação já está sendo processada.",
     "cooldown": "⏳ Aguarde um instante antes de repetir essa ação.",
     "ref_ok": "✅ Convite registrado. Continue usando o bot para a indicação entrar em análise.",
-    "ref_self": "Esse é o seu próprio link de convite, então ele não conta como indicação."
+    "ref_self": "Esse é o seu próprio link de convite, então ele não conta como indicação.",
+    "ref_already_same": "✅ Esse convite já estava associado ao mesmo link.",
+    "ref_exists": "Você já entrou no bot por outro convite."
   },
   "search": {
     "how_to": "🔎 <b>Como buscar</b>\n\nEnvie <code>/buscar nome do mangá</code> ou digite apenas o nome da obra no privado.\n\nExemplo: <code>Solo Leveling</code>",
@@ -46,18 +48,30 @@
     "text": "📚 <b>Ajuda - {brand}</b>\n\n🔎 <b>Buscar</b>\nUse <code>/buscar nome da obra</code> ou envie apenas o nome no privado.\n\n📖 <b>Ler</b>\nAbra uma obra, escolha um capítulo e leia pelo MiniApp.\n\n⭐ <b>Extras</b>\n/mperfil - perfil de leitura\n/plano - planos offline\n/indicacoes - programa de afiliados\n/idioma - alterar idioma"
   },
   "plan": {
-    "title": "📥 <b>Meu plano offline</b>",
-    "no_plan": "Você ainda não tem um plano ativo no <b>{brand}</b>.\nEscolha um plano abaixo para liberar downloads offline.",
-    "status": "Status",
-    "id": "ID",
-    "renew": "🔄 Renovar {plan}",
-    "choose": "Escolha um plano abaixo para liberar PDFs e EPUBs offline."
+    "not_defined": "não definido",
+    "lifetime": "vitalício",
+    "one_day": "1 dia",
+    "days": "{days} dias",
+    "never_expires": "não expira",
+    "expired": "expirado",
+    "remaining_days": "{days} dia(s) e {hours}h",
+    "remaining_hours": "{hours}h e {minutes}min",
+    "remaining_minutes": "{minutes}min",
+    "status_none": "sem plano",
+    "status_active": "ativo",
+    "status_expired": "expirado",
+    "status_revoked": "bloqueado",
+    "status_inactive": "inativo",
+    "renew_button": "🔄 Renovar {plan}",
+    "no_plan_text": "📥 <b>Meu plano offline</b>\n\n» <b>Status:</b> <i>{status}</i>\n» <b>ID:</b> <code>{uid}</code>\n\nVocê ainda não tem um plano ativo no <b>{brand}</b>.\nEscolha um plano abaixo para liberar PDFs e EPUBs offline.",
+    "active_text": "📥 <b>Meu plano offline</b>\n\n» <b>Status:</b> <i>{status}</i>\n» <b>Plano:</b> <i>{plan}</i>\n» <b>Duração:</b> <i>{duration}</i>\n» <b>Válido até:</b> <i>{expires}</i>\n» <b>Tempo restante:</b> <i>{remaining}</i>\n» <b>ID:</b> <code>{uid}</code>\n\nUse os botões abaixo para renovar ou falar com o suporte."
   },
   "referral": {
     "open_panel": "💼 Abrir painel de afiliados",
     "share_telegram": "Compartilhar no Telegram",
     "share_whatsapp": "Compartilhar no WhatsApp",
-    "title": "💸 <b>Programa de Afiliados Baltigo</b>",
-    "body": "<i>Transforme suas indicações em comissão dentro do Telegram.</i>\n\n📊 <b>Seu desempenho</b>\n\n💰 Disponível: <b>{available}</b>\n⏳ Em garantia: <b>{pending}</b>\n📈 Vendas válidas: <b>{sales}</b>\n\n🚀 Você indica, a pessoa assina e a comissão é calculada automaticamente. Após o prazo de garantia, o valor fica disponível para saque via Pix."
+    "share_text": "Entra no bot de mangás comigo:",
+    "no_webapp": "Configure WEBAPP_BASE_URL para ativar o painel completo.",
+    "body": "💸 <b>Programa de Afiliados Baltigo</b>\n\n<i>Transforme suas indicações em comissão dentro do Telegram.</i>\n\n📊 <b>Seu desempenho</b>\n\n💰 Disponível: <b>{available}</b>\n⏳ Em garantia: <b>{pending}</b>\n📈 Vendas válidas: <b>{sales}</b>\n\n🚀 Você indica, a pessoa assina e a comissão é calculada automaticamente. Após o prazo de garantia, o valor fica disponível para saque via Pix."
   }
 }
