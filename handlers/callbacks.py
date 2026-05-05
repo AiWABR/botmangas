@@ -23,6 +23,7 @@ from services.catalog_client import (
     get_cached_title_overview,
     get_cached_title_bundle,
     get_cached_title_summary,
+    get_chapter_list,
     get_chapter_reader_payload,
     get_title_bundle,
     get_title_chapters_snapshot,
@@ -38,9 +39,9 @@ from services.metrics import (
     mark_chapter_read,
 )
 from services.language_prefs import (
+    bundle_language_options,
     get_user_language,
     language_badge,
-    language_options,
     normalize_language,
     set_user_language,
 )
@@ -394,7 +395,7 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
 def _language_text(bundle: dict, user_id: int | None) -> str:
     title = html.escape(bundle.get("title") or "Manga")
     current = html.escape(language_badge(_user_lang(user_id)))
-    options = language_options(bundle.get("languages") or [])
+    options = bundle_language_options(bundle)
     total = len(options)
     return (
         f"🌐 <b>Escolha o idioma dos capítulos</b>\n\n"
@@ -411,7 +412,7 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
     rows: list[list[InlineKeyboardButton]] = []
     line: list[InlineKeyboardButton] = []
 
-    for option in language_options(bundle.get("languages") or []):
+    for option in bundle_language_options(bundle):
         code = option["code"]
         prefix = "✅ " if code == current else ""
         line.append(InlineKeyboardButton(f"{prefix}{option['badge']}", callback_data=f"mb|setlang|{title_id}|{code}"))
@@ -1124,11 +1125,21 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     lang = _user_lang(user_id)
     bundle = await _load_title_panel_bundle(title_id, lang)
-    if not bundle.get("languages") or bundle.get("chapters_partial"):
+    if len(bundle_language_options(bundle, include_default=False)) <= 1 or bundle.get("chapters_partial"):
         try:
-            bundle = await asyncio.wait_for(get_title_bundle(title_id, lang), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+            full_chapters = await asyncio.wait_for(get_chapter_list(title_id, ""), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+            if full_chapters.get("chapters") or full_chapters.get("languages"):
+                bundle = {
+                    **bundle,
+                    "chapters": full_chapters.get("chapters") or bundle.get("chapters") or [],
+                    "languages": full_chapters.get("languages") or bundle.get("languages") or [],
+                    "chapters_partial": False,
+                }
         except Exception:
-            pass
+            try:
+                bundle = await asyncio.wait_for(get_title_bundle(title_id, lang), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+            except Exception:
+                pass
 
     panel_message = await _render_panel(
         target,
