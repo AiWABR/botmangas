@@ -124,6 +124,7 @@ def _plan_keyboard(user_id: int, access: dict | None) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(option["label"], url=option["url"])])
 
     rows.append([InlineKeyboardButton(t_user(user_id, "common.support"), url=SUPPORT_BOT_URL)])
+    rows.append([InlineKeyboardButton(t_user(user_id, "common.back"), callback_data="mb|home")])
     return InlineKeyboardMarkup(rows)
 
 
