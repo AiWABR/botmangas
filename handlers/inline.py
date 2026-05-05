@@ -6,12 +6,14 @@ import time
 import traceback
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    LinkPreviewOptions,
     Update,
 )
 from telegram.error import BadRequest, TelegramError
@@ -20,13 +22,16 @@ from telegram.ext import ContextTypes
 from config import BOT_BRAND, BOT_USERNAME
 from services.catalog_client import (
     get_cached_search_titles,
+    get_cached_title_summary,
     get_search_fallback_titles,
+    get_title_chapters_snapshot,
     search_titles_fast,
 )
 
 INLINE_LIMIT = 8
 INLINE_QUERY_TTL = 90
 INLINE_SEARCH_TIMEOUT = 4.8
+INLINE_ENRICH_TIMEOUT = 2.2
 INLINE_ANSWER_CACHE = 6
 
 INLINE_CACHE: dict[str, tuple[float, list[dict]]] = {}
@@ -166,10 +171,13 @@ async def _search_inline(query: str) -> list[dict]:
 
 def _build_description(item: dict) -> str:
     parts = []
-    status = _translate_status(item.get("status") or "")
+    status = item.get("status") or ""
     if status and status != "N/A":
         parts.append(status)
-    if item.get("latest_chapter"):
+    chapters = _display_chapter_count(item)
+    if chapters != "0":
+        parts.append(f"{chapters} caps")
+    elif item.get("latest_chapter"):
         parts.append(f"Cap. {item['latest_chapter']}")
     elif item.get("rating"):
         parts.append(f"Nota {item['rating']}")
@@ -193,6 +201,7 @@ def _bot_url() -> str:
 def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
     title_id = str(item.get("title_id") or "").strip()
     chapter_id = str(item.get("chapter_id") or "").strip()
+    has_real_chapter = bool(chapter_id and chapter_id != title_id and (item.get("chapter_url") or item.get("latest_chapter")))
     rows: list[list[InlineKeyboardButton]] = []
 
     if title_id:
@@ -203,7 +212,7 @@ def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📖 Lista de capítulos", url=_deep_link(f"chapters_{title_id}"))]
         )
 
-    if chapter_id:
+    if has_real_chapter:
         rows.append(
             [InlineKeyboardButton("🆕 Último capítulo", url=_deep_link(f"ch_{chapter_id}"))]
         )
@@ -216,32 +225,145 @@ def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _cover_url(item: dict) -> str:
+    return str(item.get("cover_url") or item.get("background_url") or "").strip()
+
+
+def _thumbnail_url(item: dict) -> str | None:
+    url = _cover_url(item)
+    if not url:
+        return None
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if parsed.path.lower().endswith((".webp", ".avif")):
+        encoded = quote(
+            f"{parsed.netloc}{parsed.path}" + (f"?{parsed.query}" if parsed.query else ""),
+            safe="",
+        )
+        return f"https://images.weserv.nl/?url={encoded}&w=160&h=240&fit=cover&output=jpg"
+    return url
+
+
+def _preview_url(item: dict) -> str:
+    url = _cover_url(item)
+    if not url:
+        return ""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if parsed.path.lower().endswith((".webp", ".avif")):
+        encoded = quote(
+            f"{parsed.netloc}{parsed.path}" + (f"?{parsed.query}" if parsed.query else ""),
+            safe="",
+        )
+        return f"https://images.weserv.nl/?url={encoded}&w=900&output=jpg"
+    return url
+
+
+def _clean_display_value(value: Any, fallback: str = "N/A") -> str:
+    text = str(value if value not in (None, "", []) else "").strip()
+    return text or fallback
+
+
+def _display_rating(item: dict) -> str:
+    return _clean_display_value(
+        item.get("rating") or item.get("anilist_score") or item.get("score"),
+        "0",
+    )
+
+
+def _display_chapter_count(item: dict) -> str:
+    for key in ("total_chapters", "source_total_chapters", "chapters_count", "chapter_count", "anilist_chapters"):
+        value = item.get(key)
+        if value in (None, "", []):
+            continue
+        try:
+            return str(max(0, int(float(value))))
+        except (TypeError, ValueError):
+            continue
+    latest = str(item.get("latest_chapter") or "").strip()
+    digits = "".join(ch for ch in latest if ch.isdigit())
+    return digits or "0"
+
+
+def _display_genres(item: dict) -> str:
+    genres = item.get("genres") or item.get("anilist_genres") or []
+    if isinstance(genres, str):
+        genres = [part.strip() for part in genres.split(",")]
+    cleaned = [str(value).strip() for value in genres if str(value).strip()]
+    return ", ".join(cleaned[:4]) if cleaned else "N/A"
+
+
+def _merge_inline_metadata(item: dict, extra: dict | None) -> dict:
+    merged = dict(item)
+    if isinstance(extra, dict):
+        for key in (
+            "total_chapters",
+            "source_total_chapters",
+            "anilist_chapters",
+            "genres",
+            "anilist_genres",
+            "rating",
+            "anilist_score",
+            "status",
+            "cover_url",
+            "background_url",
+            "latest_chapter",
+        ):
+            if merged.get(key) in (None, "", []):
+                merged[key] = extra.get(key)
+
+    title_id = str(merged.get("title_id") or "").strip()
+    cached = get_cached_title_summary(title_id) if title_id else None
+    if isinstance(cached, dict):
+        for key in ("total_chapters", "source_total_chapters", "genres", "anilist_genres", "rating", "anilist_score"):
+            if merged.get(key) in (None, "", []):
+                merged[key] = cached.get(key)
+    return merged
+
+
+async def _enrich_inline_results(results: list[dict]) -> list[dict]:
+    async def _load(item: dict) -> dict:
+        title_id = str(item.get("title_id") or "").strip()
+        if not title_id:
+            return item
+        try:
+            snapshot = await get_title_chapters_snapshot(title_id)
+        except Exception as error:
+            _inline_exception("enrich_snapshot_error", error, title_id=title_id)
+            snapshot = None
+        return _merge_inline_metadata(item, snapshot)
+
+    try:
+        tasks = [_load(item) for item in results[:INLINE_LIMIT]]
+        enriched = await asyncio.wait_for(asyncio.gather(*tasks), timeout=INLINE_ENRICH_TIMEOUT)
+        _inline_log("enrich_ok", count=len(enriched))
+        return [*enriched, *results[INLINE_LIMIT:]]
+    except Exception as error:
+        _inline_exception("enrich_timeout_or_error", error, count=len(results))
+        return [_merge_inline_metadata(item, None) for item in results]
+
+
 def _build_message_text(item: dict, *, include_image_preview: bool = True) -> str:
     title = html.escape(item.get("display_title") or item.get("title") or "Manga")
-    status = html.escape(_translate_status(item.get("status") or ""))
-    latest = html.escape(item.get("latest_chapter") or "N/A")
-    rating = html.escape(str(item.get("rating") or "N/A"))
-    image_url = str(item.get("cover_url") or "").strip() if include_image_preview else ""
-
-    if image_url:
-        title_line = f'<b><a href="{html.escape(image_url, quote=True)}">📚</a> {title}</b>'
-    else:
-        title_line = f"<b>📚 {title}</b>"
-
-    meta_lines = [f"» <b>Status:</b> <i>{status}</i>"]
-    if latest != "N/A":
-        meta_lines.append(f"» <b>Último capítulo:</b> <i>{latest}</i>")
-    if rating != "N/A":
-        meta_lines.append(f"» <b>Nota:</b> <i>{rating}</i>")
+    status = html.escape(_clean_display_value(item.get("status") or item.get("anilist_status")))
+    chapters = html.escape(_display_chapter_count(item))
+    rating = html.escape(_display_rating(item))
+    genres = html.escape(_display_genres(item))
+    image_url = _preview_url(item) if include_image_preview else ""
 
     text = (
-        f"{title_line}\n\n"
-        f"{chr(10).join(meta_lines)}\n\n"
-        f"✨ <i>Abra no @{html.escape(BOT_USERNAME)} e continue a leitura pelo {html.escape(BOT_BRAND)}.</i>"
+        f"📚 <b>{title}</b>\n\n"
+        f"» <b>Status:</b> <i>{status}</i>\n"
+        f"» <b>Capítulos:</b> <i>{chapters}</i>\n"
+        f"» <b>Nota:</b> <i>{rating}</i>\n"
+        f"» <b>Gêneros:</b> <i>{genres}</i>\n\n"
+        "✨ <i>Escolha abaixo como quer continuar.</i>"
     )
 
     if image_url:
-        text += f'<a href="{html.escape(image_url, quote=True)}">\u200b</a>'
+        text += f'\n<a href="{html.escape(image_url, quote=True)}">\u200b</a>'
 
     return text
 
@@ -256,10 +378,20 @@ def _build_article(item: dict, index: int, *, include_thumbnail: bool = True, in
         id=_result_id(title_id, index),
         title=title[:64],
         description=_build_description(item),
-        thumbnail_url=(item.get("cover_url") or None) if include_thumbnail else None,
+        thumbnail_url=_thumbnail_url(item) if include_thumbnail else None,
         input_message_content=InputTextMessageContent(
             _build_message_text(item, include_image_preview=include_image_preview),
             parse_mode="HTML",
+            link_preview_options=(
+                LinkPreviewOptions(
+                    is_disabled=False,
+                    url=_preview_url(item),
+                    prefer_large_media=True,
+                    show_above_text=False,
+                )
+                if include_image_preview and _preview_url(item)
+                else None
+            ),
         ),
         reply_markup=_inline_keyboard(item),
     )
@@ -361,6 +493,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as error:
             _inline_exception("answer_empty_failed", error, inline_query_id=query.id, query=text)
         return
+
+    results = await _enrich_inline_results(results)
 
     _inline_log(
         "search_results",
