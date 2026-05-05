@@ -60,6 +60,15 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     user = update.effective_user
     if not query or not user or not query.data:
         return False
+    if query.data == "mb|uilangmenu":
+        await query.answer()
+        await query.edit_message_text(
+            language_panel_text(user.id),
+            parse_mode="HTML",
+            reply_markup=_keyboard(),
+            disable_web_page_preview=True,
+        )
+        return True
     if not query.data.startswith("mb|uilang|"):
         return False
 
