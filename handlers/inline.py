@@ -1,7 +1,11 @@
 import asyncio
 import hashlib
 import html
+import json
 import time
+import traceback
+from datetime import datetime, timezone
+from typing import Any
 
 from telegram import (
     InlineKeyboardButton,
@@ -39,6 +43,28 @@ STATUS_PT_MAP = {
 }
 
 
+def _inline_log(event: str, **payload: Any) -> None:
+    data = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "event": event,
+        **payload,
+    }
+    try:
+        print("[INLINE_DEBUG]", json.dumps(data, ensure_ascii=True, default=str), flush=True)
+    except Exception:
+        print("[INLINE_DEBUG_FALLBACK]", event, repr(payload), flush=True)
+
+
+def _inline_exception(event: str, error: BaseException, **payload: Any) -> None:
+    _inline_log(
+        event,
+        error_type=type(error).__name__,
+        error_repr=repr(error),
+        traceback=traceback.format_exc(),
+        **payload,
+    )
+
+
 def _result_id(title_id: str, index: int) -> str:
     return hashlib.md5(f"{title_id}:{index}".encode("utf-8")).hexdigest()
 
@@ -57,65 +83,83 @@ def _translate_status(value: str) -> str:
 def _cache_get(query: str) -> list[dict] | None:
     item = INLINE_CACHE.get(query)
     if not item:
+        _inline_log("cache_miss", query=query)
         return None
     created_at, results = item
     if time.time() - created_at > INLINE_QUERY_TTL:
         INLINE_CACHE.pop(query, None)
+        _inline_log("cache_expired", query=query, age_seconds=round(time.time() - created_at, 3), count=len(results))
         return None
+    _inline_log("cache_hit", query=query, age_seconds=round(time.time() - created_at, 3), count=len(results))
     return results
 
 
 def _cache_set(query: str, results: list[dict]) -> list[dict]:
     INLINE_CACHE[query] = (time.time(), results)
+    _inline_log("cache_set", query=query, count=len(results))
     return results
 
 
 def _fallback_search(query: str) -> list[dict]:
+    started = time.perf_counter()
     try:
-        return get_search_fallback_titles(query, limit=INLINE_LIMIT)
+        results = get_search_fallback_titles(query, limit=INLINE_LIMIT)
+        _inline_log("fallback_search_ok", query=query, count=len(results), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
+        return results
     except Exception as error:
-        print("[INLINE][FALLBACK]", query, repr(error))
+        _inline_exception("fallback_search_error", error, query=query, elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
         return []
 
 
 async def _search_inline(query: str) -> list[dict]:
+    started = time.perf_counter()
     normalized = _normalize_query(query)
+    _inline_log("search_start", raw_query=query, normalized=normalized)
     if not normalized:
+        _inline_log("search_empty_query", elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
         return []
 
     cached = _cache_get(normalized)
     if cached is not None:
+        _inline_log("search_return_cache", query=normalized, count=len(cached), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
         return cached
 
     cached_catalog = get_cached_search_titles(normalized, limit=INLINE_LIMIT)
     if cached_catalog is not None:
+        _inline_log("search_return_catalog_cache", query=normalized, count=len(cached_catalog), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
         return _cache_set(normalized, cached_catalog[:INLINE_LIMIT])
 
     fallback_catalog = _fallback_search(normalized)
     if fallback_catalog:
+        _inline_log("search_return_fallback_before_network", query=normalized, count=len(fallback_catalog), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
         return _cache_set(normalized, fallback_catalog[:INLINE_LIMIT])
 
     task = _INLINE_INFLIGHT.get(normalized.lower())
     if task:
+        _inline_log("search_join_inflight", query=normalized)
         return await task
 
     async def _runner() -> list[dict]:
+        runner_started = time.perf_counter()
         try:
             results = await asyncio.wait_for(
                 search_titles_fast(normalized, limit=INLINE_LIMIT),
                 timeout=INLINE_SEARCH_TIMEOUT,
             )
         except Exception as error:
-            print("[INLINE][SEARCH]", normalized, repr(error))
+            _inline_exception("network_search_error", error, query=normalized, elapsed_ms=round((time.perf_counter() - runner_started) * 1000, 2))
             fallback_results = _fallback_search(normalized)
             return _cache_set(normalized, fallback_results[:INLINE_LIMIT])
 
+        _inline_log("network_search_ok", query=normalized, count=len(results), elapsed_ms=round((time.perf_counter() - runner_started) * 1000, 2))
         return _cache_set(normalized, results[:INLINE_LIMIT])
 
     task = asyncio.create_task(_runner())
     _INLINE_INFLIGHT[normalized.lower()] = task
     try:
-        return await task
+        results = await task
+        _inline_log("search_done", query=normalized, count=len(results), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
+        return results
     finally:
         _INLINE_INFLIGHT.pop(normalized.lower(), None)
 
@@ -221,6 +265,23 @@ def _build_article(item: dict, index: int, *, include_thumbnail: bool = True, in
     )
 
 
+def _article_debug(article: InlineQueryResultArticle) -> dict[str, Any]:
+    data = article.to_dict()
+    content = data.get("input_message_content") or {}
+    keyboard = data.get("reply_markup") or {}
+    return {
+        "id": data.get("id"),
+        "type": data.get("type"),
+        "title": data.get("title"),
+        "description": data.get("description"),
+        "thumbnail_url": data.get("thumbnail_url"),
+        "message_len": len(str(content.get("message_text") or "")),
+        "parse_mode": content.get("parse_mode"),
+        "button_count": sum(len(row) for row in keyboard.get("inline_keyboard") or []),
+        "buttons": keyboard.get("inline_keyboard") or [],
+    }
+
+
 def _helper_article(query_text: str, *, kind: str) -> InlineQueryResultArticle:
     escaped_query = html.escape(query_text or "")
 
@@ -254,24 +315,71 @@ def _helper_article(query_text: str, *, kind: str) -> InlineQueryResultArticle:
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.inline_query
     if not query:
+        _inline_log("handler_without_inline_query", update=update.to_dict() if update else None)
         return
 
     text = _normalize_query(query.query or "")
-    print("[INLINE][UPDATE]", query.id, query.from_user.id if query.from_user else "", repr(text))
+    _inline_log(
+        "update_received",
+        update_id=update.update_id,
+        inline_query_id=query.id,
+        from_user=(query.from_user.to_dict() if query.from_user else None),
+        raw_query=query.query,
+        normalized_query=text,
+        offset=query.offset,
+        chat_type=query.chat_type,
+        location=query.location.to_dict() if query.location else None,
+    )
     if len(text) < 2:
-        await query.answer([_helper_article(text, kind="short")], cache_time=2, is_personal=True)
+        helper = _helper_article(text, kind="short")
+        _inline_log("answer_short_query_prepare", inline_query_id=query.id, article=_article_debug(helper))
+        try:
+            await query.answer([helper], cache_time=2, is_personal=True)
+            _inline_log("answer_short_query_ok", inline_query_id=query.id)
+        except Exception as error:
+            _inline_exception("answer_short_query_failed", error, inline_query_id=query.id)
         return
 
     try:
         results = await _search_inline(text)
     except Exception as error:
-        print("[INLINE][UNHANDLED]", text, repr(error))
-        await query.answer([_helper_article(text, kind="empty")], cache_time=2, is_personal=True)
+        _inline_exception("search_unhandled_error", error, inline_query_id=query.id, query=text)
+        helper = _helper_article(text, kind="empty")
+        try:
+            await query.answer([helper], cache_time=2, is_personal=True)
+            _inline_log("answer_search_error_helper_ok", inline_query_id=query.id)
+        except Exception as answer_error:
+            _inline_exception("answer_search_error_helper_failed", answer_error, inline_query_id=query.id)
         return
 
     if not results:
-        await query.answer([_helper_article(text, kind="empty")], cache_time=4, is_personal=True)
+        helper = _helper_article(text, kind="empty")
+        _inline_log("answer_empty_prepare", inline_query_id=query.id, query=text, article=_article_debug(helper))
+        try:
+            await query.answer([helper], cache_time=4, is_personal=True)
+            _inline_log("answer_empty_ok", inline_query_id=query.id, query=text)
+        except Exception as error:
+            _inline_exception("answer_empty_failed", error, inline_query_id=query.id, query=text)
         return
+
+    _inline_log(
+        "search_results",
+        inline_query_id=query.id,
+        query=text,
+        count=len(results),
+        items=[
+            {
+                "title_id": item.get("title_id"),
+                "chapter_id": item.get("chapter_id"),
+                "title": item.get("display_title") or item.get("title"),
+                "cover_url": item.get("cover_url"),
+                "latest_chapter": item.get("latest_chapter"),
+                "status": item.get("status"),
+                "rating": item.get("rating"),
+            }
+            for item in results[:INLINE_LIMIT]
+        ],
+    )
 
     articles = []
     for index, item in enumerate(results[:INLINE_LIMIT]):
@@ -282,22 +390,53 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not articles:
         articles = [_helper_article(text, kind="empty")]
 
+    _inline_log(
+        "answer_prepare",
+        inline_query_id=query.id,
+        query=text,
+        count=len(articles),
+        cache_time=INLINE_ANSWER_CACHE,
+        is_personal=True,
+        articles=[_article_debug(article) for article in articles],
+    )
     try:
         await query.answer(articles, cache_time=INLINE_ANSWER_CACHE, is_personal=True)
-        print("[INLINE][ANSWER_OK]", text, len(articles))
+        _inline_log("answer_ok", inline_query_id=query.id, query=text, count=len(articles))
     except BadRequest as error:
-        print("[INLINE][ANSWER]", text, len(articles), repr(error))
+        _inline_exception("answer_bad_request", error, inline_query_id=query.id, query=text, count=len(articles))
         safe_articles = [
             article
             for index, item in enumerate(results[:INLINE_LIMIT])
             if (article := _build_article(item, index, include_thumbnail=False, include_image_preview=False)) is not None
         ] or [_helper_article(text, kind="empty")]
+        _inline_log(
+            "answer_retry_prepare",
+            inline_query_id=query.id,
+            query=text,
+            count=len(safe_articles),
+            articles=[_article_debug(article) for article in safe_articles],
+        )
         try:
             await query.answer(safe_articles, cache_time=2, is_personal=True)
-            print("[INLINE][ANSWER_RETRY_OK]", text, len(safe_articles))
+            _inline_log("answer_retry_ok", inline_query_id=query.id, query=text, count=len(safe_articles))
         except TelegramError as retry_error:
-            print("[INLINE][ANSWER_RETRY_FAILED]", text, len(safe_articles), repr(retry_error))
+            _inline_exception("answer_retry_failed", retry_error, inline_query_id=query.id, query=text, count=len(safe_articles))
     except TelegramError as error:
-        print("[INLINE][ANSWER_TELEGRAM_ERROR]", text, len(articles), repr(error))
+        _inline_exception("answer_telegram_error", error, inline_query_id=query.id, query=text, count=len(articles))
     except Exception as error:
-        print("[INLINE][ANSWER_UNEXPECTED]", text, len(articles), repr(error))
+        _inline_exception("answer_unexpected_error", error, inline_query_id=query.id, query=text, count=len(articles))
+
+
+async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chosen = update.chosen_inline_result
+    if not chosen:
+        return
+    _inline_log(
+        "chosen_inline_result",
+        update_id=update.update_id,
+        result_id=chosen.result_id,
+        from_user=chosen.from_user.to_dict() if chosen.from_user else None,
+        query=chosen.query,
+        inline_message_id=chosen.inline_message_id,
+        location=chosen.location.to_dict() if chosen.location else None,
+    )
