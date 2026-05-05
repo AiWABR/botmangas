@@ -26,7 +26,6 @@ from services.catalog_client import (
     get_cached_title_overview,
     get_cached_title_bundle,
     get_cached_title_summary,
-    get_chapter_list,
     get_chapter_list_fast,
     get_chapter_reader_payload,
     get_title_bundle,
