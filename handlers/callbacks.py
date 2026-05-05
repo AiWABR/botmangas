@@ -43,6 +43,7 @@ from services.metrics import (
 from services.language_prefs import (
     bundle_language_options,
     get_user_language,
+    language_options,
     language_badge,
     language_flag,
     normalize_language,
@@ -422,6 +423,8 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
     line: list[InlineKeyboardButton] = []
 
     options = bundle_language_options(bundle, include_default=False)
+    if not options:
+        options = language_options([PREFERRED_CHAPTER_LANG, "en", "es"], include_default=False)
     for option in options:
         code = option["code"]
         prefix = "🔘 " if code == current else ""
@@ -433,7 +436,7 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
     if line:
         rows.append(line)
 
-    if not options or bundle.get("languages_loading"):
+    if bundle.get("languages_loading"):
         rows.append([InlineKeyboardButton("🔄 Recarregar idiomas", callback_data=f"mb|lang|{title_id}")])
 
     rows.append([InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")])
@@ -1150,7 +1153,7 @@ async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_
 
     if len(bundle_language_options(bundle, include_default=False)) <= 1 or bundle.get("chapters_partial"):
         try:
-            full_chapters = await asyncio.wait_for(get_chapter_list_fast(title_id, ""), timeout=4.5)
+            full_chapters = await asyncio.wait_for(get_chapter_list_fast(title_id, ""), timeout=1.5)
             if full_chapters.get("chapters") or full_chapters.get("languages"):
                 bundle = {
                     **bundle,
@@ -1569,7 +1572,6 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if action == "lang" and len(parts) >= 3:
                     await _safe_answer_query(query)
-                    await _show_loading_markup(query, "⏳ Carregando idiomas")
                     await send_language_panel(query, context, parts[2], user_id, edit=True)
                     return
 
