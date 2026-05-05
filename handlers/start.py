@@ -197,13 +197,13 @@ async def _send_welcome(message, first_name: str) -> None:
     inline_hint = f"@{BOT_USERNAME} solo leveling" if BOT_USERNAME else "/buscar solo leveling"
 
     keyboard_rows = [
-        [InlineKeyboardButton("🔎 Buscar manga", switch_inline_query_current_chat="")],
+        [InlineKeyboardButton("🔎 Buscar mangás", switch_inline_query_current_chat="")],
     ]
 
     if BOT_USERNAME:
         keyboard_rows.append(
             [
-                InlineKeyboardButton("🎁 Indicacoes", callback_data="noop_indicar"),
+                InlineKeyboardButton("🎁 Indicações", callback_data="noop_indicar"),
             ]
         )
 
@@ -222,15 +222,14 @@ async def _send_welcome(message, first_name: str) -> None:
     safe_name = html.escape(first_name or "leitor")
     safe_brand = html.escape(BOT_BRAND)
     text = (
-        f"🎬 <b>Bem-vindo ao {safe_brand}, {safe_name}!</b>\n\n"
-        "Aqui você pode encontrar mangás/manhwas/manhuas de forma\n"
-        "rápida, direto no Telegram.\n\n"
+        f"🎬 <b>Bem-vindo ao Mangás Baltigo, {safe_name}!</b>\n\n"
+        "Aqui você pode encontrar mangás, manhwas e manhuas de forma rápida, direto no Telegram.\n\n"
         "✨ <b>O que você pode fazer aqui:</b>\n\n"
         "<blockquote>"
-        "🔎 Encontra qualquer obra em segundos\n"
-        "📖 Lê capítulos sem dor de cabeça\n"
-        "📚 Acompanha suas obras favoritas"
-        "</blockquote>\n"
+        "• 🔎 Encontra qualquer obra em segundos\n"
+        "• 📖 Lê capítulos sem dor de cabeça\n"
+        "• 📚 Acompanha suas obras favoritas"
+        "</blockquote>\n\n"
         "<i>O catálogo está liberado para todos!</i>"
     )
 
