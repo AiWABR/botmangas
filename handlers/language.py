@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from services.i18n import t_user
@@ -38,6 +39,38 @@ def language_panel_text(user_id: int | str | None) -> str:
     )
 
 
+async def _replace_query_panel(query, text: str, markup: InlineKeyboardMarkup) -> None:
+    try:
+        if getattr(query.message, "photo", None):
+            await query.edit_message_caption(
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        else:
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+        return
+    except BadRequest as error:
+        # Photo messages without editable captions, inline edge cases, or stale messages.
+        if "message is not modified" in str(error).lower():
+            return
+    except TelegramError:
+        pass
+
+    if query.message:
+        await query.message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+
+
 async def idioma(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_channel_membership(update, context):
         return
@@ -62,12 +95,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         return False
     if query.data == "mb|uilangmenu":
         await query.answer()
-        await query.edit_message_text(
-            language_panel_text(user.id),
-            parse_mode="HTML",
-            reply_markup=_keyboard(),
-            disable_web_page_preview=True,
-        )
+        await _replace_query_panel(query, language_panel_text(user.id), _keyboard())
         return True
     if not query.data.startswith("mb|uilang|"):
         return False
@@ -80,10 +108,5 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer(label)
     except Exception:
         pass
-    await query.edit_message_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=_keyboard(),
-        disable_web_page_preview=True,
-    )
+    await _replace_query_panel(query, text, _keyboard())
     return True
