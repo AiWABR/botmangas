@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from threading import Lock
 from typing import Any
@@ -11,12 +12,15 @@ PREFS_PATH = DATA_DIR / "language_preferences.json"
 
 _LOCK = Lock()
 
+SUPPORTED_INTERFACE_LOCALES = {"pt-BR", "en-US", "es-ES"}
+DEFAULT_INTERFACE_LOCALE = "pt-BR"
+
 LANGUAGE_LABELS: dict[str, str] = {
     "pt-br": "Português BR",
     "pt": "Português",
     "en": "Inglês",
     "es": "Espanhol",
-    "es": "Espanhol LATAM",
+    "es-la": "Espanhol LATAM",
     "fr": "Francês",
     "de": "Alemão",
     "it": "Italiano",
@@ -44,9 +48,11 @@ LANGUAGE_FLAGS: dict[str, str] = {
     "el": "🇬🇷",
     "en": "🇬🇧",
     "es": "🇪🇸",
-    "es": "🇦🇷",
-    "es": "🇲🇽",
-    "es": "🇪🇸",
+    "es-ar": "🇦🇷",
+    "es-mx": "🇲🇽",
+    "es-es": "🇪🇸",
+    "es-la": "🌎",
+    "es-419": "🌎",
     "fa": "🇮🇷",
     "fi": "🇫🇮",
     "fr": "🇫🇷",
@@ -101,6 +107,27 @@ def normalize_language(value: Any) -> str:
         "spanish": "es",
     }
     return aliases.get(lang, lang)
+
+
+def normalize_interface_locale(value: Any) -> str:
+    raw = str(value or "").strip().replace("_", "-")
+    lowered = raw.lower()
+    aliases = {
+        "pt": "pt-BR",
+        "pt-br": "pt-BR",
+        "br": "pt-BR",
+        "portugues": "pt-BR",
+        "portuguese": "pt-BR",
+        "en": "en-US",
+        "en-us": "en-US",
+        "english": "en-US",
+        "es": "es-ES",
+        "es-es": "es-ES",
+        "espanol": "es-ES",
+        "spanish": "es-ES",
+    }
+    locale = aliases.get(lowered, raw)
+    return locale if locale in SUPPORTED_INTERFACE_LOCALES else DEFAULT_INTERFACE_LOCALE
 
 
 def language_label(lang: str) -> str:
@@ -229,7 +256,9 @@ def _load_data() -> dict[str, Any]:
 
 def _save_data(data: dict[str, Any]) -> None:
     PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PREFS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path = PREFS_PATH.with_suffix(PREFS_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, PREFS_PATH)
 
 
 def get_user_language(user_id: int | str | None, fallback: str | None = None) -> str:
@@ -243,6 +272,19 @@ def get_user_language(user_id: int | str | None, fallback: str | None = None) ->
         user = (data.get("users") or {}).get(key) or {}
         lang = normalize_language(user.get("chapter_language"))
     return lang or default
+
+
+def get_user_interface_language(user_id: int | str | None, fallback: str | None = None) -> str:
+    default = normalize_interface_locale(fallback or DEFAULT_INTERFACE_LOCALE)
+    key = str(user_id or "").strip()
+    if not key:
+        return default
+
+    with _LOCK:
+        data = _load_data()
+        user = (data.get("users") or {}).get(key) or {}
+        lang = user.get("interface_language") or user.get("ui_language") or user.get("locale")
+    return normalize_interface_locale(lang or default)
 
 
 def set_user_language(user_id: int | str, lang: str) -> dict[str, Any]:
@@ -267,5 +309,27 @@ def set_user_language(user_id: int | str, lang: str) -> dict[str, Any]:
         "chapter_language": normalized,
         "label": language_label(normalized),
         "badge": language_badge(normalized),
+        "updated_at": now,
+    }
+
+
+def set_user_interface_language(user_id: int | str, locale: str) -> dict[str, Any]:
+    key = str(user_id or "").strip()
+    normalized = normalize_interface_locale(locale)
+    if not key:
+        raise ValueError("user_id obrigatorio")
+
+    now = int(time.time() * 1000)
+    with _LOCK:
+        data = _load_data()
+        users = data.setdefault("users", {})
+        current = users.setdefault(key, {})
+        current["interface_language"] = normalized
+        current["updated_at"] = now
+        _save_data(data)
+
+    return {
+        "user_id": key,
+        "interface_language": normalized,
         "updated_at": now,
     }
