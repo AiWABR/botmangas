@@ -89,7 +89,10 @@ def language_option(raw: Any) -> dict[str, str] | None:
         code = normalize_language(
             raw.get("code")
             or raw.get("language")
+            or raw.get("language_code")
+            or raw.get("locale")
             or raw.get("lang")
+            or raw.get("slug")
             or raw.get("value")
             or raw.get("id")
         )
@@ -126,6 +129,34 @@ def language_options(raw_languages: list[Any] | None, *, include_default: bool =
         seen.add(option["code"])
 
     return options
+
+
+def collect_language_sources(bundle: dict[str, Any] | None) -> list[Any]:
+    if not isinstance(bundle, dict):
+        return []
+
+    sources: list[Any] = []
+    sources.extend(bundle.get("languages") or [])
+
+    for chapter in bundle.get("chapters") or []:
+        if not isinstance(chapter, dict):
+            continue
+        if chapter.get("chapter_language"):
+            sources.append(chapter.get("chapter_language"))
+        if chapter.get("language"):
+            sources.append(chapter.get("language"))
+        preferred = chapter.get("preferred_translation")
+        if isinstance(preferred, dict):
+            sources.append(preferred)
+        for translation in chapter.get("translations") or []:
+            if isinstance(translation, dict):
+                sources.append(translation)
+
+    return sources
+
+
+def bundle_language_options(bundle: dict[str, Any] | None, *, include_default: bool = True) -> list[dict[str, str]]:
+    return language_options(collect_language_sources(bundle), include_default=include_default)
 
 
 def _load_data() -> dict[str, Any]:
