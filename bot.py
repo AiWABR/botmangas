@@ -32,7 +32,7 @@ from handlers.language import idioma
 from handlers.inline import chosen_inline_result, inline_query
 from handlers.metricas import metricas, metricas_limpar
 from handlers.novoseps import auto_post_new_eps_job, postnovoseps
-from handlers.offline_admin import offlineadd, offlinecheck, offlinerevoke
+from handlers.offline_admin import liberar, offlineadd, offlinecheck, offlinerevoke
 from handlers.pdf_bulk import pdfmanga
 from handlers.plan import plano
 from handlers.referral import indicacoes, referral_button
@@ -179,6 +179,7 @@ async def set_bot_commands_job(app: Application) -> None:
                 ("ajuda", "Ver como usar"),
                 ("plano", "Ver planos e status"),
                 ("indicacoes", "Ver link e ganhos de indicação"),
+                ("liberar", "Liberar offline manualmente"),
             ]
         )
     except Exception as error:
@@ -251,6 +252,7 @@ def main() -> None:
     app.add_handler(CommandHandler("pdfall", pdfmanga))
     app.add_handler(CommandHandler("plano", plano))
     app.add_handler(CommandHandler("offlineadd", offlineadd))
+    app.add_handler(CommandHandler("liberar", liberar))
     app.add_handler(CommandHandler("offlinecheck", offlinecheck))
     app.add_handler(CommandHandler("offlinerevoke", offlinerevoke))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
