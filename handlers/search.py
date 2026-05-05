@@ -8,7 +8,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from config import PROMO_BANNER_URL
 from core.background import fire_and_forget_sync
 from services.catalog_client import (
     get_cached_search_titles,
