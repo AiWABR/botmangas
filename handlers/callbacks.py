@@ -1563,8 +1563,8 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 if action == "home":
                     await _safe_answer_query(query)
-                    from handlers.start import send_home_panel
-                    await send_home_panel(query.message, user_id, user.first_name or "leitor")
+                    from handlers.start import edit_home_panel
+                    await edit_home_panel(query, user_id, user.first_name or "leitor")
                     return
 
                 if action == "lang" and len(parts) >= 3:
