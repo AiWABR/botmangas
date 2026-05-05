@@ -46,6 +46,12 @@ from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_
 from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
+from services.language_prefs import (
+    get_user_language,
+    language_options,
+    normalize_language,
+    set_user_language,
+)
 from services.affiliate_db import (
     admin_list_withdrawals,
     admin_list_affiliates,
@@ -141,6 +147,11 @@ class FavoritePayload(BaseModel):
     added_at: int | float | None = None
     updated_at: int | float | None = None
     favorite: bool = True
+
+
+class PreferencesPayload(BaseModel):
+    user_id: str = Field(min_length=1)
+    chapter_language: str = Field(min_length=1)
 
 
 class FavoritesSyncPayload(BaseModel):
@@ -391,7 +402,8 @@ def _sorted_filtered_chapters(bundle: dict[str, Any], lang: str) -> list[dict[st
 
 
 def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
-    chapters = _sorted_filtered_chapters(bundle, lang)
+    resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+    chapters = _sorted_filtered_chapters(bundle, resolved_lang)
     latest = next((item for item in chapters if item.get("chapter_id")), None)
     chapters_partial = bool(bundle.get("chapters_partial") or bundle.get("partial"))
     try:
@@ -426,6 +438,8 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "authors": bundle.get("authors") or [],
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
+        "language_options": language_options(bundle.get("languages") or []),
+        "current_language": resolved_lang,
         "total_chapters": total_chapters,
         "source_total_chapters": source_total_chapters,
         "estimated_total_chapters": estimated_total_chapters,
@@ -1074,9 +1088,10 @@ async def api_section(section_name: str, limit: int = Query(12, ge=1, le=24)):
 
 
 @app.get("/api/title/{title_id}")
-async def api_title(title_id: str, user_id: str = Query(""), lang: str = Query(PREFERRED_CHAPTER_LANG)):
+async def api_title(title_id: str, user_id: str = Query(""), lang: str = Query("")):
     try:
-        return await _title_payload(title_id, lang, user_id)
+        resolved_lang = normalize_language(lang) or get_user_language(user_id, PREFERRED_CHAPTER_LANG)
+        return await _title_payload(title_id, resolved_lang, user_id)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -1084,22 +1099,42 @@ async def api_title(title_id: str, user_id: str = Query(""), lang: str = Query(P
 @app.get("/api/title/{title_id}/chapters")
 async def api_title_chapters(title_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)):
     try:
-        bundle = await _title_payload(title_id, lang)
+        resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+        bundle = await _title_payload(title_id, resolved_lang)
         return {
             "title_id": bundle["title_id"],
             "title": bundle.get("title") or "",
             "chapters": bundle.get("chapters") or [],
+            "language_options": bundle.get("language_options") or [],
+            "current_language": bundle.get("current_language") or resolved_lang,
         }
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/chapter/{chapter_id}")
-async def api_chapter(chapter_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)):
+async def api_chapter(chapter_id: str, user_id: str = Query(""), lang: str = Query("")):
     try:
-        return await _chapter_payload(chapter_id, lang)
+        resolved_lang = normalize_language(lang) or get_user_language(user_id, PREFERRED_CHAPTER_LANG)
+        return await _chapter_payload(chapter_id, resolved_lang)
     except Exception as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/preferences")
+async def api_get_preferences(user_id: str = Query("")):
+    lang = get_user_language(user_id, PREFERRED_CHAPTER_LANG)
+    return {
+        "chapter_language": lang,
+        "language_options": language_options([lang]),
+    }
+
+
+@app.post("/api/preferences")
+async def api_save_preferences(payload: PreferencesPayload):
+    preference = set_user_language(payload.user_id, payload.chapter_language)
+    await _invalidate_prefix("cache")
+    return {"ok": True, "preferences": preference}
 
 
 @app.get("/api/progress")
