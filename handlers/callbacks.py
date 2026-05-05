@@ -332,6 +332,10 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
 
     primary_row: list[InlineKeyboardButton] = []
 
+
+    if title_id:
+       rows.append([InlineKeyboardButton(f"🌐 Idioma: {language_badge(lang)}", callback_data=f"mb|lang|{title_id}")])
+            
     if last_read and last_read.get("chapter_id"):
         primary_row.append(
             InlineKeyboardButton(
@@ -380,9 +384,6 @@ def _title_keyboard(bundle: dict, last_read: dict | None = None, user_id: int | 
             )
         ]
     )
-
-    if title_id:
-        rows.append([InlineKeyboardButton(f"🌐 Idioma: {language_badge(lang)}", callback_data=f"mb|lang|{title_id}")])
 
     if bundle.get("anilist_url"):
         rows.append([InlineKeyboardButton("📖 Descrição", url=bundle["anilist_url"])])
