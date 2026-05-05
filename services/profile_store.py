@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from threading import Lock
 from typing import Any
@@ -33,10 +34,12 @@ def _load_data() -> dict[str, Any]:
 
 def _save_data(data: dict[str, Any]) -> None:
     FAVORITES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    FAVORITES_PATH.write_text(
+    tmp_path = FAVORITES_PATH.with_suffix(FAVORITES_PATH.suffix + ".tmp")
+    tmp_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    os.replace(tmp_path, FAVORITES_PATH)
 
 
 def _user_bucket(data: dict[str, Any], user_id: int | str) -> dict[str, Any]:
