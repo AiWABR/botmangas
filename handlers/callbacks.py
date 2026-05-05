@@ -50,6 +50,7 @@ from services.telegraph_service import get_cached_chapter_page_url, get_or_creat
 CALLBACK_COOLDOWN = 0.8
 TELEGRAPH_INLINE_WAIT = 1.15
 CHAPTER_PANEL_FAST_TIMEOUT = 16.0
+LANGUAGE_PANEL_TIMEOUT = 6.0
 SUPPORT_BOT_URL = "https://t.me/QGSuporteBot"
 
 _USER_CALLBACK_LOCKS: dict[int, asyncio.Lock] = {}
@@ -1127,7 +1128,7 @@ async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_
     bundle = await _load_title_panel_bundle(title_id, lang)
     if len(bundle_language_options(bundle, include_default=False)) <= 1 or bundle.get("chapters_partial"):
         try:
-            full_chapters = await asyncio.wait_for(get_chapter_list(title_id, ""), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
+            full_chapters = await asyncio.wait_for(get_chapter_list(title_id, ""), timeout=LANGUAGE_PANEL_TIMEOUT)
             if full_chapters.get("chapters") or full_chapters.get("languages"):
                 bundle = {
                     **bundle,
@@ -1135,11 +1136,8 @@ async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_
                     "languages": full_chapters.get("languages") or bundle.get("languages") or [],
                     "chapters_partial": False,
                 }
-        except Exception:
-            try:
-                bundle = await asyncio.wait_for(get_title_bundle(title_id, lang), timeout=CHAPTER_PANEL_FAST_TIMEOUT)
-            except Exception:
-                pass
+        except Exception as error:
+            print("[LANGUAGE_PANEL][FAST_FALLBACK]", title_id, repr(error))
 
     panel_message = await _render_panel(
         target,
