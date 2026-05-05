@@ -165,22 +165,22 @@ CAKTO_ORDER_SYNC_LIMIT = _env_int("CAKTO_ORDER_SYNC_LIMIT", 100)
 CAKTO_PLAN_BRONZE_URL = (
     os.getenv("CAKTO_PLAN_BRONZE_URL", "").strip()
     or os.getenv("CAKTO_PLAN_WEEKLY_URL", "").strip()
-    or "https://pay.cakto.com.br/wyd3e3i"
+    or ""
 )
 CAKTO_PLAN_OURO_URL = (
     os.getenv("CAKTO_PLAN_OURO_URL", "").strip()
     or os.getenv("CAKTO_PLAN_MONTHLY_URL", "").strip()
-    or "https://pay.cakto.com.br/38kt683_866815"
+    or ""
 )
 CAKTO_PLAN_DIAMANTE_URL = (
     os.getenv("CAKTO_PLAN_DIAMANTE_URL", "").strip()
     or os.getenv("CAKTO_PLAN_ANNUAL_URL", "").strip()
     or os.getenv("CAKTO_PLAN_12M_URL", "").strip()
-    or "https://pay.cakto.com.br/33mfwfe"
+    or ""
 )
 CAKTO_PLAN_RUBI_URL = (
     os.getenv("CAKTO_PLAN_RUBI_URL", "").strip()
-    or "https://pay.cakto.com.br/57t5ieq"
+    or ""
 )
 CAKTO_PLAN_1M_URL = CAKTO_PLAN_OURO_URL
 CAKTO_PLAN_3M_URL = os.getenv("CAKTO_PLAN_3M_URL", "").strip()
