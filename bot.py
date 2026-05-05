@@ -28,6 +28,7 @@ from handlers.broadcast import (
 )
 from handlers.callbacks import callbacks
 from handlers.help import ajuda
+from handlers.language import idioma
 from handlers.inline import chosen_inline_result, inline_query
 from handlers.metricas import metricas, metricas_limpar
 from handlers.novoseps import auto_post_new_eps_job, postnovoseps
@@ -37,8 +38,9 @@ from handlers.plan import plano
 from handlers.referral import indicacoes, referral_button
 from handlers.referral_admin import auto_referral_check_job, refstats
 from handlers.profile import mperfil
-from handlers.search import buscar
+from handlers.search import buscar, buscar_texto_livre
 from handlers.start import start
+from services.i18n import t_user
 from services.catalog_client import schedule_warm_catalog_cache, warm_catalog_cache
 from services.cache_cleanup import cleanup_cache_once
 from services.metrics import init_metrics_db
@@ -75,6 +77,7 @@ def _bot_log(event: str, **payload: Any) -> None:
 async def post_init(app: Application) -> None:
     await start_pdf_workers(app)
     await start_epub_workers(app)
+    await set_bot_commands_job(app)
     schedule_warm_catalog_cache()
     if CACHE_CLEANUP_STARTUP:
         asyncio.create_task(cleanup_cache_once())
@@ -119,7 +122,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     try:
         if isinstance(update, Update) and update.effective_message:
-            await update.effective_message.reply_text("Ocorreu um erro ao processar sua solicitacao.")
+            user_id = getattr(update.effective_user, "id", None)
+            await update.effective_message.reply_text(t_user(user_id, "common.generic_error"))
     except Exception:
         pass
 
@@ -163,6 +167,22 @@ async def affiliate_release_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         release_due_commissions()
     except Exception as error:
         print("ERRO AFFILIATE RELEASE:", repr(error))
+
+
+async def set_bot_commands_job(app: Application) -> None:
+    try:
+        await app.bot.set_my_commands(
+            [
+                ("start", "Iniciar o bot"),
+                ("buscar", "Buscar mangá, manhwa ou manhua"),
+                ("idioma", "Alterar idioma do bot"),
+                ("ajuda", "Ver como usar"),
+                ("plano", "Ver planos e status"),
+                ("indicacoes", "Ver link e ganhos de indicação"),
+            ]
+        )
+    except Exception as error:
+        _bot_log("set_commands_error", error_type=type(error).__name__, error_repr=repr(error))
 
 
 def _register_jobs(app: Application) -> None:
@@ -222,6 +242,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("buscar", buscar))
+    app.add_handler(CommandHandler("idioma", idioma))
     app.add_handler(CommandHandler("ajuda", ajuda))
     app.add_handler(CommandHandler("postnovoseps", postnovoseps))
     app.add_handler(CommandHandler("postnovoscaps", postnovoseps))
@@ -247,6 +268,11 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(broadcast_callbacks, pattern=r"^bc\|"))
     app.add_handler(CallbackQueryHandler(referral_button, pattern=r"^noop_indicar$"))
     app.add_handler(CallbackQueryHandler(callbacks, pattern=r"^mb\|"))
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, buscar_texto_livre),
+        group=10,
+    )
 
     app.add_handler(
         MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_message_router),
