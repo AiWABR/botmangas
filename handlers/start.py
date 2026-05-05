@@ -3,7 +3,7 @@ import html
 import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from config import BOT_BRAND, BOT_USERNAME, WEBAPP_BASE_URL
@@ -169,6 +169,38 @@ def _miniapp_title_url(title_id: str) -> str:
     return f"{base}/miniapp/index.html?title_id={title_id}" if base else ""
 
 
+def build_welcome_panel(user_id: int, first_name: str) -> tuple[str, InlineKeyboardMarkup]:
+    snapshot = get_cached_home_snapshot(limit=4)
+    featured = snapshot.get("featured") or []
+
+    keyboard_rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(t_user(user_id, "common.search"), switch_inline_query_current_chat="")],
+        [
+            InlineKeyboardButton(t_user(user_id, "common.language"), callback_data="mb|uilangmenu"),
+            InlineKeyboardButton(t_user(user_id, "common.plans"), callback_data="mb|plan"),
+        ],
+    ]
+
+    if BOT_USERNAME:
+        keyboard_rows.append([InlineKeyboardButton(t_user(user_id, "common.referrals"), callback_data="noop_indicar")])
+
+    for item in featured[:4]:
+        title_id = str(item.get("title_id") or "").strip()
+        url = _miniapp_title_url(title_id)
+        if title_id and url:
+            keyboard_rows.append(
+                [[InlineKeyboardButton(f"📘 {item.get('title') or 'Mangá'}", web_app=WebAppInfo(url=url))]]
+            )
+
+    text = t_user(
+        user_id,
+        "start.welcome",
+        brand=html.escape(BOT_BRAND or "Mangas Baltigo"),
+        name=html.escape(first_name or "leitor"),
+    )
+    return text, InlineKeyboardMarkup(keyboard_rows)
+
+
 async def _send_welcome(message, user_id: int, first_name: str) -> None:
     snapshot = get_cached_home_snapshot(limit=4)
     featured = snapshot.get("featured") or []
@@ -222,9 +254,28 @@ async def _send_welcome(message, user_id: int, first_name: str) -> None:
         )
 
 
-async def send_home_panel(target, user_id: int, first_name: str = "leitor") -> None:
-    message = getattr(target, "message", None) or target
-    await _send_welcome(message, user_id, first_name)
+async def edit_home_panel(query, user_id: int, first_name: str = "leitor") -> None:
+    schedule_warm_catalog_cache()
+    text, markup = build_welcome_panel(user_id, first_name)
+    try:
+        if getattr(query.message, "photo", None):
+            await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+        return
+    except BadRequest as error:
+        if "message is not modified" in str(error).lower():
+            return
+    except TelegramError:
+        pass
+
+    if query.message:
+        await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
