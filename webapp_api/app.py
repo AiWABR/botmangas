@@ -1391,7 +1391,8 @@ async def api_sync_favorites(request: Request, payload: FavoritesSyncPayload):
 
 
 @app.post("/api/refresh")
-async def api_refresh():
+async def api_refresh(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     await _invalidate_prefix("cache")
     return {"ok": True}
 
