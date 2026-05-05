@@ -20,12 +20,10 @@ from handlers.search import edit_search_page, render_search_page
 from services.catalog_client import (
     flatten_chapters,
     get_cached_chapter_reader_payload,
-    get_cached_chapter_list,
     get_cached_title_overview,
     get_cached_title_bundle,
     get_cached_title_summary,
     get_chapter_list,
-    get_chapter_list_fast,
     get_chapter_reader_payload,
     get_title_bundle,
     get_title_chapters_snapshot,
@@ -203,7 +201,7 @@ def _fallback_title_bundle(title_id: str, *, title: str = "Manga", summary: dict
         "status": summary.get("status") or summary.get("anilist_status") or "carregando",
         "rating": summary.get("rating") or summary.get("anilist_score") or "",
         "chapters": [],
-        "languages": summary.get("languages") or [],
+        "languages": [],
         "total_chapters": total_chapters,
         "latest_chapter": _summary_latest_chapter(summary),
         "genres": summary.get("genres") or summary.get("anilist_genres") or [],
@@ -401,17 +399,14 @@ def _language_text(bundle: dict, user_id: int | None) -> str:
     title = html.escape(bundle.get("title") or "Manga")
     current_lang = _user_lang(user_id)
     current = html.escape(f"{current_lang.upper()} {language_flag(current_lang)}")
-    options = bundle_language_options(bundle, include_default=False)
+    options = bundle_language_options(bundle)
     total = len(options)
-    footer = "Escolha abaixo o idioma dos capítulos."
-    if total == 0 or bundle.get("languages_loading"):
-        footer = "Ainda estou buscando os idiomas reais desta obra. Toque em recarregar em instantes."
     return (
         f"🌎 <b>Idioma</b>\n\n"
         f"» <b>Obra:</b> <i>{title}</i>\n"
         f"» <b>Atual:</b> <i>{current}</i>\n"
-        f"» <b>Disponíveis:</b> <i>{total if total else 'carregando'}</i>\n\n"
-        f"{footer}"
+        f"» <b>Disponíveis:</b> <i>{total}</i>\n\n"
+        "Escolha abaixo o idioma dos capítulos."
     )
 
 
@@ -421,8 +416,7 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
     rows: list[list[InlineKeyboardButton]] = []
     line: list[InlineKeyboardButton] = []
 
-    options = bundle_language_options(bundle, include_default=False)
-    for option in options:
+    for option in bundle_language_options(bundle):
         code = option["code"]
         prefix = "🔘 " if code == current else ""
         label = f"{prefix}{option.get('short') or code.upper()} {option.get('flag') or language_flag(code)}"
@@ -432,9 +426,6 @@ def _language_keyboard(bundle: dict, user_id: int | None) -> InlineKeyboardMarku
             line = []
     if line:
         rows.append(line)
-
-    if not options or bundle.get("languages_loading"):
-        rows.append([InlineKeyboardButton("🔄 Recarregar idiomas", callback_data=f"mb|lang|{title_id}")])
 
     rows.append([InlineKeyboardButton("🔙 Voltar para a obra", callback_data=f"mb|title|{title_id}")])
     return InlineKeyboardMarkup(rows)
@@ -1139,18 +1130,9 @@ async def send_title_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id:
 async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_id: str, user_id: int | None, *, edit: bool):
     lang = _user_lang(user_id)
     bundle = await _load_title_panel_bundle(title_id, lang)
-    cached_chapters = get_cached_chapter_list(title_id, "")
-    if cached_chapters and (cached_chapters.get("chapters") or cached_chapters.get("languages")):
-        bundle = {
-            **bundle,
-            "chapters": cached_chapters.get("chapters") or bundle.get("chapters") or [],
-            "languages": cached_chapters.get("languages") or bundle.get("languages") or [],
-            "chapters_partial": False,
-        }
-
     if len(bundle_language_options(bundle, include_default=False)) <= 1 or bundle.get("chapters_partial"):
         try:
-            full_chapters = await asyncio.wait_for(get_chapter_list_fast(title_id, ""), timeout=4.5)
+            full_chapters = await asyncio.wait_for(get_chapter_list(title_id, ""), timeout=LANGUAGE_PANEL_TIMEOUT)
             if full_chapters.get("chapters") or full_chapters.get("languages"):
                 bundle = {
                     **bundle,
@@ -1160,12 +1142,6 @@ async def send_language_panel(target, context: ContextTypes.DEFAULT_TYPE, title_
                 }
         except Exception as error:
             print("[LANGUAGE_PANEL][FAST_FALLBACK]", title_id, repr(error))
-            bundle = {**bundle, "languages_loading": True}
-            fire_and_forget(get_chapter_list(title_id, ""))
-
-    if len(bundle_language_options(bundle, include_default=False)) == 0:
-        bundle = {**bundle, "languages_loading": True}
-        fire_and_forget(get_chapter_list(title_id, ""))
 
     panel_message = await _render_panel(
         target,
