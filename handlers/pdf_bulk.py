@@ -26,6 +26,7 @@ from services.catalog_client import (
     get_title_bundle,
     search_titles,
 )
+from services.language_prefs import get_user_language, language_badge, normalize_language
 from services.offline_access import is_offline_user_allowed
 from utils.gatekeeper import ensure_channel_membership
 
@@ -46,6 +47,7 @@ class PdfBulkState:
     user_id: int
     title_ref: str
     order: str
+    lang: str = PREFERRED_CHAPTER_LANG
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
     status_message: Any | None = None
@@ -132,10 +134,10 @@ async def _safe_delete(message) -> None:
         pass
 
 
-def _ordered_chapters(bundle: dict, title_id: str, order: str) -> list[dict]:
+def _ordered_chapters(bundle: dict, title_id: str, order: str, lang: str | None = None) -> list[dict]:
     return flatten_chapters(
         {"title_id": title_id, "chapters": bundle.get("chapters") or []},
-        PREFERRED_CHAPTER_LANG,
+        normalize_language(lang) or PREFERRED_CHAPTER_LANG,
         ascending=normalize_pdf_bulk_order(order) == ORDER_ASC,
     )
 
@@ -145,6 +147,7 @@ async def _edit_preparing_status(state: PdfBulkState, current_index: int = 0, cu
         "📥 <b>Preparando PDFs offline</b>",
         "",
         f"» <b>Obra:</b> <i>{html.escape(state.title_name)}</i>",
+        f"» <b>Idioma:</b> <i>{html.escape(language_badge(state.lang))}</i>",
         f"» <b>Ordem:</b> <i>{_order_label(state.order)}</i>",
     ]
     if state.total:
@@ -173,10 +176,10 @@ async def _run_pdf_bulk(app, state: PdfBulkState) -> None:
             reply_markup=_stop_keyboard(state.job_id),
         )
 
-        bundle = get_cached_title_bundle(state.title_ref) or await get_title_bundle(state.title_ref)
+        bundle = get_cached_title_bundle(state.title_ref, state.lang) or await get_title_bundle(state.title_ref, state.lang)
         title_id = str(bundle.get("title_id") or state.title_ref).strip()
         state.title_name = bundle.get("title") or "Manga"
-        chapters = _ordered_chapters(bundle, title_id, state.order)
+        chapters = _ordered_chapters(bundle, title_id, state.order, state.lang)
         chapters, was_limited = _limited_chapters(chapters)
         state.total = len(chapters)
 
@@ -201,6 +204,7 @@ async def _run_pdf_bulk(app, state: PdfBulkState) -> None:
             try:
                 chapter = await get_chapter_reader_payload(
                     item.get("chapter_id") or "",
+                    state.lang,
                     title_hint=title_id,
                 )
                 images = chapter.get("images") or []
@@ -291,6 +295,7 @@ async def request_pdf_bulk_for_title(
     user_id: int,
     title_ref: str,
     order: str = ORDER_ASC,
+    lang: str | None = None,
 ) -> bool:
     if not can_use_pdf_bulk(user_id):
         await context.bot.send_message(
@@ -317,6 +322,7 @@ async def request_pdf_bulk_for_title(
         user_id=user_id,
         title_ref=title_ref,
         order=normalize_pdf_bulk_order(order),
+        lang=normalize_language(lang) or get_user_language(user_id, PREFERRED_CHAPTER_LANG),
     )
     _ACTIVE_BULK_KEYS[active_key] = job_id
     _BULK_STATES[job_id] = state
