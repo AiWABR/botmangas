@@ -625,6 +625,8 @@ def _remember_title_summary(item: dict[str, Any]) -> None:
         "anilist_status",
         "anilist_score",
         "latest_chapter",
+        "languages",
+        "total_translations",
         "chapter_id",
         "chapter_url",
         "language",
@@ -1617,6 +1619,16 @@ def _chapter_list_cache_key(title_id: str) -> str:
     return f"chapter-list:{title_id}:all"
 
 
+def get_cached_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any] | None:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        return None
+    cached = _cache_get(_chapter_list_cache_key(title_id), CHAPTERS_TTL)
+    if isinstance(cached, dict) and not cached.get("partial"):
+        return _chapter_payload_with_preferred_language(cached, lang)
+    return None
+
+
 def _chapter_payload_with_preferred_language(chapter_payload: dict[str, Any], preferred_lang: str | None) -> dict[str, Any]:
     preferred_lang = _clean(preferred_lang).lower() or PREFERRED_CHAPTER_LANG
     chapters: list[dict[str, Any]] = []
@@ -1684,11 +1696,21 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
             return {"title_id": title_id, "chapters": [], "languages": [], "total_translations": 0, "partial": True}
 
         chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        languages = response.get("ALL_LANGUAGES") or []
+        total_translations = int(response.get("TOTAL_TRANSLATIONS") or 0)
+        _remember_title_summary(
+            {
+                "title_id": title_id,
+                "languages": languages,
+                "total_translations": total_translations,
+                "total_chapters": len(chapters),
+            }
+        )
         return {
             "title_id": title_id,
             "chapters": chapters,
-            "languages": response.get("ALL_LANGUAGES") or [],
-            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+            "languages": languages,
+            "total_translations": total_translations,
         }
 
     try:
@@ -1755,11 +1777,21 @@ async def get_chapter_list_fast(title_id: str, lang: str | None = None) -> dict[
             }
 
         chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        languages = response.get("ALL_LANGUAGES") or []
+        total_translations = int(response.get("TOTAL_TRANSLATIONS") or 0)
+        _remember_title_summary(
+            {
+                "title_id": title_id,
+                "languages": languages,
+                "total_translations": total_translations,
+                "total_chapters": len(chapters),
+            }
+        )
         return {
             "title_id": title_id,
             "chapters": chapters,
-            "languages": response.get("ALL_LANGUAGES") or [],
-            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+            "languages": languages,
+            "total_translations": total_translations,
         }
 
     result = await _dedup_fetch(cache_key, min(CHAPTERS_TTL, 300), _load)
