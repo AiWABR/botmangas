@@ -47,6 +47,7 @@ from services.media_pipeline import resolve_telegraph_asset_path
 from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
 from services.offline_access import init_offline_access_db
 from services.language_prefs import (
+    bundle_language_options,
     get_user_language,
     language_options,
     normalize_language,
@@ -438,7 +439,7 @@ def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
         "authors": bundle.get("authors") or [],
         "published": bundle.get("published") or "",
         "languages": bundle.get("languages") or [],
-        "language_options": language_options(bundle.get("languages") or []),
+        "language_options": bundle_language_options(bundle),
         "current_language": resolved_lang,
         "total_chapters": total_chapters,
         "source_total_chapters": source_total_chapters,
