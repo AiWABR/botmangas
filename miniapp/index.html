@@ -614,6 +614,9 @@
     .chapter-search input::placeholder { color: var(--text3); }
     .chapter-order-btn { height: 38px; padding: 0 12px; border-radius: var(--r-sm); background: var(--bg4); border: 1px solid var(--line); color: var(--text2); font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 5px; cursor: pointer; transition: all .18s var(--ease); white-space: nowrap; flex-shrink: 0; }
     .chapter-order-btn:hover { background: var(--glass2); color: var(--text); border-color: var(--line2); }
+    .language-select { height: 38px; min-width: 136px; border-radius: var(--r-sm); border: 1px solid rgba(79,125,255,.24); background: rgba(79,125,255,.08); color: var(--text); padding: 0 11px; font-size: 12px; font-weight: 800; outline: none; cursor: pointer; }
+    .language-select:focus { border-color: rgba(79,125,255,.55); box-shadow: 0 0 0 3px rgba(79,125,255,.14); }
+    .language-select option { color: #101626; background: #f8fbff; }
 
     .chapter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(125px, 1fr)); gap: 7px; }
     .chapter-btn { min-height: 50px; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--text); padding: 9px 11px; text-align: left; transition: all .17s var(--ease); cursor: pointer; }
@@ -688,6 +691,8 @@
       .detail-info { padding-top: 0; width: 100%; }
       .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
       .chapter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+      .chapter-controls { flex-wrap: wrap; align-items: stretch; }
+      .language-select { flex: 1 1 100%; min-width: 0; }
       .page { padding-left: 12px; padding-right: 12px; }
       .topbar-inner { padding: 0 12px; }
       .detail-body { padding: 14px; }
@@ -1009,6 +1014,7 @@ function timeAgo(ts) {
 // ══════════════════════════════════════════
 const state = {
   userId: String(tg?.initDataUnsafe?.user?.id || ""),
+  chapterLang: loadChapterLanguage(),
   currentPage: "home",
   currentTitleId: "",
   currentChapterId: "",
@@ -1057,6 +1063,47 @@ function toggleFav(titleId, meta = {}) {
 }
 function getFavList() {
   return Object.values(state.favorites).sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
+}
+
+function normalizeLang(value) {
+  return String(value || "").trim().toLowerCase().replace(/_/g, "-") || "pt-br";
+}
+function loadChapterLanguage() {
+  const params = new URLSearchParams(window.location.search);
+  return normalizeLang(params.get("lang") || localStorage.getItem("mb_chapter_lang_v1") || "pt-br");
+}
+function saveChapterLanguage(lang) {
+  state.chapterLang = normalizeLang(lang);
+  try { localStorage.setItem("mb_chapter_lang_v1", state.chapterLang); } catch (_) {}
+}
+function languageLabel(option) {
+  if (!option) return "";
+  if (typeof option === "string") return option.toUpperCase();
+  return option.badge || option.label || option.code || "";
+}
+function languageCode(option) {
+  if (!option) return "";
+  return normalizeLang(typeof option === "string" ? option : (option.code || option.language || option.lang || option.value || ""));
+}
+async function syncPreferencesWithServer() {
+  if (!state.userId) return;
+  try {
+    const response = await api(`/api/preferences?user_id=${encodeURIComponent(state.userId)}`);
+    const serverLang = normalizeLang(response?.chapter_language || "");
+    if (serverLang && serverLang !== state.chapterLang && !localStorage.getItem("mb_chapter_lang_v1")) {
+      saveChapterLanguage(serverLang);
+    }
+  } catch (_) {}
+}
+async function savePreferencesToServer() {
+  if (!state.userId) return;
+  try {
+    await api("/api/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: state.userId, chapter_language: state.chapterLang }),
+    });
+  } catch (_) {}
 }
 
 // Seen updates: track which chapter_ids user has already seen in Novidades
@@ -1179,6 +1226,7 @@ async function syncUserDataWithServer() {
   await Promise.all([
     syncFavoritesWithServer(),
     syncProgressWithServer(),
+    syncPreferencesWithServer(),
   ]);
 }
 
@@ -1210,16 +1258,18 @@ function getBootParams() {
     route: p.get("route") || p.get("page") || p.get("view") || "",
     titleId: p.get("title_id") || p.get("manga_id") || p.get("id") || p.get("title") || "",
     chapterId: p.get("chapter_id") || p.get("cap") || p.get("read") || p.get("chapter") || "",
+    lang: normalizeLang(p.get("lang") || state.chapterLang),
   };
 }
 function syncUrl({ route = "", titleId = "", chapterId = "" } = {}, replace = false) {
   const url = new URL(window.location.href);
   const p = url.searchParams;
-  ["route","page","view","title_id","manga_id","id","title","chapter_id","cap","read","chapter"]
+  ["route","page","view","title_id","manga_id","id","title","chapter_id","cap","read","chapter","lang"]
     .forEach(k => p.delete(k));
   if (titleId) { p.set("title_id", titleId); p.set("manga_id", titleId); p.set("id", titleId); p.set("title", titleId); }
   if (chapterId) { p.set("chapter_id", chapterId); p.set("cap", chapterId); p.set("read", chapterId); p.set("chapter", chapterId); }
   if (route) { p.set("route", route); p.set("page", route); p.set("view", route); }
+  if (state.chapterLang) p.set("lang", state.chapterLang);
   const finalUrl = `${url.pathname}?${p.toString()}`;
   if (replace) history.replaceState({ route, titleId, chapterId }, "", finalUrl);
   else history.pushState({ route, titleId, chapterId }, "", finalUrl);
@@ -1811,6 +1861,10 @@ function renderDetail(bundle, opts = {}) {
     Array.isArray(entry?.chapters) ? entry.chapters : [entry]
   ).filter(Boolean);
   const chapters = sortChapters(flatChapters);
+  const languageOptions = Array.isArray(bundle?.language_options) && bundle.language_options.length
+    ? bundle.language_options
+    : [{ code: state.chapterLang, badge: state.chapterLang.toUpperCase() }];
+  const currentLanguage = normalizeLang(bundle?.current_language || state.chapterLang);
 
   const local = getProgress(bundle.title_id);
   const lastRead = bundle?.last_read?.chapter_id || local?.chapter_id || "";
@@ -1870,6 +1924,12 @@ function renderDetail(bundle, opts = {}) {
             </div>
           </div>
           <div class="chapter-controls">
+            <select class="language-select" id="chapterLanguageSelect" aria-label="Idioma dos capítulos">
+              ${languageOptions.map(option => {
+                const code = languageCode(option);
+                return `<option value="${esc(code)}" ${code === currentLanguage ? "selected" : ""}>${esc(languageLabel(option))}</option>`;
+              }).join("")}
+            </select>
             ${chapters.length > 10 ? `
               <div class="chapter-search">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -1945,6 +2005,18 @@ function renderDetail(bundle, opts = {}) {
     buildChapterButtons(getFilteredSorted());
   });
 
+  const languageSelect = $$("chapterLanguageSelect");
+  if (languageSelect) languageSelect.addEventListener("change", async () => {
+    const nextLang = normalizeLang(languageSelect.value);
+    if (!nextLang || nextLang === state.chapterLang) return;
+    saveChapterLanguage(nextLang);
+    state.cache.titles.clear();
+    state.cache.chapters.clear();
+    await savePreferencesToServer();
+    toast("Idioma dos capítulos atualizado.");
+    openTitle(bundle.title_id, true, { route: "chapters", replaceHistory: true });
+  });
+
   const synopsisToggle = $$("synopsisToggle");
   if (synopsisToggle) synopsisToggle.onclick = () => {
     const text = $$("synopsisText");
@@ -1966,24 +2038,24 @@ function renderDetail(bundle, opts = {}) {
 
 async function openTitle(titleId, force = false, options = {}) {
   if (!titleId) return;
-  const key = String(titleId);
+  const key = `${String(titleId)}:${state.chapterLang}`;
   if (!force && state.inflight.title.has(key)) return state.inflight.title.get(key);
 
   const task = (async () => {
-    state.currentTitleId = key;
+    state.currentTitleId = String(titleId);
     showLoading("Abrindo obra", "Carregando sinopse, capas e capítulos.");
     try {
       let bundle = state.cache.titles.get(key);
       if (!bundle || force) {
-        bundle = await api(`/api/title/${encodeURIComponent(key)}?lang=pt-br${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`);
-        const local = getProgress(key);
+        bundle = await api(`/api/title/${encodeURIComponent(titleId)}?lang=${encodeURIComponent(state.chapterLang)}${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`);
+        const local = getProgress(titleId);
         if (local && !bundle.last_read) bundle.last_read = { title_id: local.title_id, title_name: local.title_name, chapter_id: local.chapter_id, chapter_number: local.chapter_number };
         state.cache.titles.set(key, bundle);
       }
       renderDetail(bundle, { route: options.route || "detail", replaceHistory: Boolean(options.replaceHistory) });
       [bundle?.last_read?.chapter_id, bundle?.latest_chapter?.chapter_id].forEach(async (cid) => {
-        if (!cid || state.cache.chapters.has(cid)) return;
-        try { state.cache.chapters.set(cid, await api(`/api/chapter/${encodeURIComponent(cid)}`)); } catch (_) {}
+        if (!cid || state.cache.chapters.has(`${cid}:${state.chapterLang}`)) return;
+        try { state.cache.chapters.set(`${cid}:${state.chapterLang}`, await api(`/api/chapter/${encodeURIComponent(cid)}?lang=${encodeURIComponent(state.chapterLang)}${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`)); } catch (_) {}
       });
     } catch (err) {
       console.error("TITLE:", err);
@@ -2060,7 +2132,7 @@ function attachReaderObserver(payload) {
     const index = Number(visible.target.dataset.index || "0");
     if (index === lastSaved) return;
     lastSaved = index;
-    const tb = state.cache.titles.get(payload.title_id);
+    const tb = state.cache.titles.get(`${payload.title_id}:${state.chapterLang}`);
     const savedCover = tb?.cover_url || getProgress(payload.title_id)?.cover_url || "";
     persistProgress({ title_id: payload.title_id, title_name: payload.title, chapter_id: payload.chapter_id, chapter_number: payload.chapter_number, page_index: index, total_pages: images.length, cover_url: savedCover }).catch(() => {});
   }, { threshold: [0.3, 0.6, 0.9] });
@@ -2082,7 +2154,7 @@ async function persistProgress(payload) {
 
 async function openChapter(chapterId, force = false, options = {}) {
   if (!chapterId) return;
-  const key = String(chapterId);
+  const key = `${String(chapterId)}:${state.chapterLang}`;
   if (!force && state.inflight.chapter.has(key)) return state.inflight.chapter.get(key);
 
   const task = (async () => {
@@ -2090,20 +2162,22 @@ async function openChapter(chapterId, force = false, options = {}) {
     try {
       let payload = state.cache.chapters.get(key);
       if (!payload || force) {
-        payload = await api(`/api/chapter/${encodeURIComponent(key)}`);
+        payload = await api(`/api/chapter/${encodeURIComponent(chapterId)}?lang=${encodeURIComponent(state.chapterLang)}${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`);
         state.cache.chapters.set(key, payload);
       }
       renderChapter(payload, { replaceHistory: Boolean(options.replaceHistory) });
-      const titleBundle = state.cache.titles.get(payload.title_id);
+      const titleBundle = state.cache.titles.get(`${payload.title_id}:${state.chapterLang}`);
       const coverUrl = titleBundle?.cover_url || "";
       await persistProgress({ title_id: payload.title_id, title_name: payload.title, chapter_id: payload.chapter_id, chapter_number: payload.chapter_number, page_index: 1, total_pages: payload.images?.length || 0, cover_url: coverUrl });
       [payload?.next_chapter?.chapter_id, payload?.previous_chapter?.chapter_id].forEach(async (id) => {
-        if (!id || state.cache.chapters.has(id)) return;
-        try { state.cache.chapters.set(id, await api(`/api/chapter/${encodeURIComponent(id)}`)); } catch (_) {}
+        const chapterKey = `${id}:${state.chapterLang}`;
+        if (!id || state.cache.chapters.has(chapterKey)) return;
+        try { state.cache.chapters.set(chapterKey, await api(`/api/chapter/${encodeURIComponent(id)}?lang=${encodeURIComponent(state.chapterLang)}${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`)); } catch (_) {}
       });
-      if (payload?.title_id && !state.cache.titles.has(payload.title_id)) {
-        api(`/api/title/${encodeURIComponent(payload.title_id)}?lang=pt-br${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`)
-          .then(bundle => { state.cache.titles.set(payload.title_id, bundle); state.currentTitleBundle = bundle; })
+      const titleKey = `${payload?.title_id || ""}:${state.chapterLang}`;
+      if (payload?.title_id && !state.cache.titles.has(titleKey)) {
+        api(`/api/title/${encodeURIComponent(payload.title_id)}?lang=${encodeURIComponent(state.chapterLang)}${state.userId ? `&user_id=${encodeURIComponent(state.userId)}` : ""}`)
+          .then(bundle => { state.cache.titles.set(titleKey, bundle); state.currentTitleBundle = bundle; })
           .catch(() => {});
       }
     } catch (err) {
@@ -2175,6 +2249,7 @@ setInterval(() => { state.cache.home = null; }, 3 * 60 * 1000);
 
 window.addEventListener("popstate", async () => {
   const boot = getBootParams();
+  if (boot.lang) saveChapterLanguage(boot.lang);
   if (boot.route === "lib") { await syncFavoritesWithServer(); openLibPage(); return; }
   if (boot.route === "updates") { await syncFavoritesWithServer(); openUpdatesPage(); return; }
   if (boot.route === "history") { await syncProgressWithServer(); openHistoryPage(); return; }
@@ -2186,6 +2261,7 @@ window.addEventListener("popstate", async () => {
 
 async function boot() {
   const b = getBootParams();
+  if (b.lang) saveChapterLanguage(b.lang);
   if (["lib", "updates", "history", "profile"].includes(b.route)) {
     await syncUserDataWithServer();
   } else {
