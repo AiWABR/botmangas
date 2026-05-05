@@ -26,6 +26,7 @@ def _keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(LOCALE_LABELS["pt-BR"], callback_data="mb|uilang|pt-BR")],
             [InlineKeyboardButton(LOCALE_LABELS["en-US"], callback_data="mb|uilang|en-US")],
             [InlineKeyboardButton(LOCALE_LABELS["es-ES"], callback_data="mb|uilang|es-ES")],
+            [InlineKeyboardButton("⬅️ Voltar ao início", callback_data="mb|home")],
         ]
     )
 
@@ -80,12 +81,14 @@ async def idioma(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not message:
         return
 
-    await message.reply_text(
+    panel = await message.reply_text(
         language_panel_text(user.id),
         parse_mode="HTML",
         reply_markup=_keyboard(),
         disable_web_page_preview=True,
     )
+    context.user_data["language_command_message_id"] = message.message_id
+    context.user_data["language_panel_message_id"] = panel.message_id
 
 
 async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -108,5 +111,20 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer(label)
     except Exception:
         pass
+    command_message_id = context.user_data.pop("language_command_message_id", None)
+    panel_message_id = context.user_data.pop("language_panel_message_id", None)
+    if query.message and panel_message_id == query.message.message_id:
+        chat_id = query.message.chat.id
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=query.message.message_id)
+        except Exception:
+            pass
+        if command_message_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=command_message_id)
+            except Exception:
+                pass
+        return True
+
     await _replace_query_panel(query, text, _keyboard())
     return True
