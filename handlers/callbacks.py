@@ -22,7 +22,6 @@ from handlers.language import handle_language_callback
 from services.catalog_client import (
     flatten_chapters,
     get_cached_chapter_reader_payload,
-    get_cached_chapter_list,
     get_cached_title_overview,
     get_cached_title_bundle,
     get_cached_title_summary,
