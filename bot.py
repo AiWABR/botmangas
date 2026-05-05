@@ -1,13 +1,19 @@
 import asyncio
+import json
+import traceback
+from datetime import datetime, timezone
+from typing import Any
 
 from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChosenInlineResultHandler,
     CommandHandler,
     ContextTypes,
     InlineQueryHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -22,7 +28,7 @@ from handlers.broadcast import (
 )
 from handlers.callbacks import callbacks
 from handlers.help import ajuda
-from handlers.inline import inline_query
+from handlers.inline import chosen_inline_result, inline_query
 from handlers.metricas import metricas, metricas_limpar
 from handlers.novoseps import auto_post_new_eps_job, postnovoseps
 from handlers.offline_admin import offlineadd, offlinecheck, offlinerevoke
@@ -54,12 +60,47 @@ BOT_API_READ_TIMEOUT = 25.0
 BOT_API_WRITE_TIMEOUT = 25.0
 
 
+def _bot_log(event: str, **payload: Any) -> None:
+    data = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "event": event,
+        **payload,
+    }
+    try:
+        print("[BOT_DEBUG]", json.dumps(data, ensure_ascii=True, default=str), flush=True)
+    except Exception:
+        print("[BOT_DEBUG_FALLBACK]", event, repr(payload), flush=True)
+
+
 async def post_init(app: Application) -> None:
     await start_pdf_workers(app)
     await start_epub_workers(app)
     schedule_warm_catalog_cache()
     if CACHE_CLEANUP_STARTUP:
         asyncio.create_task(cleanup_cache_once())
+    try:
+        me = await app.bot.get_me()
+        webhook = await app.bot.get_webhook_info()
+        _bot_log(
+            "post_init_bot_status",
+            bot_id=me.id,
+            username=me.username,
+            can_join_groups=me.can_join_groups,
+            can_read_all_group_messages=me.can_read_all_group_messages,
+            supports_inline_queries=me.supports_inline_queries,
+            webhook_url_set=bool(webhook.url),
+            webhook_url=webhook.url,
+            pending_update_count=webhook.pending_update_count,
+            last_error_date=webhook.last_error_date,
+            last_error_message=webhook.last_error_message,
+        )
+    except Exception as error:
+        _bot_log(
+            "post_init_status_error",
+            error_type=type(error).__name__,
+            error_repr=repr(error),
+            traceback=traceback.format_exc(),
+        )
 
 
 async def post_shutdown(app: Application) -> None:
@@ -69,12 +110,44 @@ async def post_shutdown(app: Application) -> None:
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print("ERRO:", repr(context.error))
+    _bot_log(
+        "application_error",
+        error_type=type(context.error).__name__ if context.error else "",
+        error_repr=repr(context.error),
+        traceback="".join(traceback.format_exception(None, context.error, context.error.__traceback__)) if context.error else "",
+        update=update.to_dict() if isinstance(update, Update) else repr(update),
+    )
     try:
         if isinstance(update, Update) and update.effective_message:
             await update.effective_message.reply_text("Ocorreu um erro ao processar sua solicitacao.")
     except Exception:
         pass
+
+
+async def update_probe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.inline_query:
+        query = update.inline_query
+        _bot_log(
+            "probe_inline_update",
+            update_id=update.update_id,
+            inline_query_id=query.id,
+            from_user=query.from_user.to_dict() if query.from_user else None,
+            query=query.query,
+            offset=query.offset,
+            chat_type=query.chat_type,
+            full_update=update.to_dict(),
+        )
+    elif update.chosen_inline_result:
+        chosen = update.chosen_inline_result
+        _bot_log(
+            "probe_chosen_inline_update",
+            update_id=update.update_id,
+            result_id=chosen.result_id,
+            from_user=chosen.from_user.to_dict() if chosen.from_user else None,
+            query=chosen.query,
+            inline_message_id=chosen.inline_message_id,
+            full_update=update.to_dict(),
+        )
 
 
 async def warm_catalog_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -165,7 +238,9 @@ def main() -> None:
     app.add_handler(CommandHandler("metricas", metricas))
     app.add_handler(CommandHandler("metricaslimpar", metricas_limpar))
     app.add_handler(CommandHandler("mperfil", mperfil))
+    app.add_handler(TypeHandler(Update, update_probe, block=False), group=-100)
     app.add_handler(InlineQueryHandler(inline_query))
+    app.add_handler(ChosenInlineResultHandler(chosen_inline_result))
     app.add_handler(CommandHandler("postallmangas", postallmangas))
     app.add_handler(CommandHandler("posttodosmangas", postallmangas))
 
@@ -181,8 +256,10 @@ def main() -> None:
     _register_jobs(app)
     app.add_error_handler(error_handler)
 
-    print("Bot de mangas rodando...")
-    app.run_polling(drop_pending_updates=True)
+    allowed_updates = list(Update.ALL_TYPES)
+    print("Bot de mangas rodando...", flush=True)
+    _bot_log("run_polling_start", allowed_updates=allowed_updates)
+    app.run_polling(drop_pending_updates=True, allowed_updates=allowed_updates)
 
 
 if __name__ == "__main__":
