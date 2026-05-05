@@ -10,6 +10,7 @@ from telegram import (
     InputTextMessageContent,
     Update,
 )
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from config import BOT_BRAND, BOT_USERNAME
@@ -171,12 +172,12 @@ def _inline_keyboard(item: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _build_message_text(item: dict) -> str:
+def _build_message_text(item: dict, *, include_image_preview: bool = True) -> str:
     title = html.escape(item.get("display_title") or item.get("title") or "Manga")
     status = html.escape(_translate_status(item.get("status") or ""))
     latest = html.escape(item.get("latest_chapter") or "N/A")
     rating = html.escape(str(item.get("rating") or "N/A"))
-    image_url = str(item.get("cover_url") or "").strip()
+    image_url = str(item.get("cover_url") or "").strip() if include_image_preview else ""
 
     if image_url:
         title_line = f'<b><a href="{html.escape(image_url, quote=True)}">📚</a> {title}</b>'
@@ -199,6 +200,25 @@ def _build_message_text(item: dict) -> str:
         text += f'<a href="{html.escape(image_url, quote=True)}">\u200b</a>'
 
     return text
+
+
+def _build_article(item: dict, index: int, *, include_thumbnail: bool = True, include_image_preview: bool = True) -> InlineQueryResultArticle | None:
+    title = item.get("display_title") or item.get("title") or "Manga"
+    title_id = item.get("title_id") or ""
+    if not title_id:
+        return None
+
+    return InlineQueryResultArticle(
+        id=_result_id(title_id, index),
+        title=title[:64],
+        description=_build_description(item),
+        thumbnail_url=(item.get("cover_url") or None) if include_thumbnail else None,
+        input_message_content=InputTextMessageContent(
+            _build_message_text(item, include_image_preview=include_image_preview),
+            parse_mode="HTML",
+        ),
+        reply_markup=_inline_keyboard(item),
+    )
 
 
 def _helper_article(query_text: str, *, kind: str) -> InlineQueryResultArticle:
@@ -237,6 +257,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = _normalize_query(query.query or "")
+    print("[INLINE][UPDATE]", query.id, query.from_user.id if query.from_user else "", repr(text))
     if len(text) < 2:
         await query.answer([_helper_article(text, kind="short")], cache_time=2, is_personal=True)
         return
@@ -254,26 +275,29 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     articles = []
     for index, item in enumerate(results[:INLINE_LIMIT]):
-        title = item.get("display_title") or item.get("title") or "Manga"
-        title_id = item.get("title_id") or ""
-        if not title_id:
-            continue
-
-        articles.append(
-            InlineQueryResultArticle(
-                id=_result_id(title_id, index),
-                title=title[:64],
-                description=_build_description(item),
-                thumbnail_url=item.get("cover_url") or None,
-                input_message_content=InputTextMessageContent(_build_message_text(item), parse_mode="HTML"),
-                reply_markup=_inline_keyboard(item),
-            )
-        )
+        article = _build_article(item, index)
+        if article is not None:
+            articles.append(article)
 
     if not articles:
         articles = [_helper_article(text, kind="empty")]
 
     try:
         await query.answer(articles, cache_time=INLINE_ANSWER_CACHE, is_personal=True)
-    except Exception as error:
+        print("[INLINE][ANSWER_OK]", text, len(articles))
+    except BadRequest as error:
         print("[INLINE][ANSWER]", text, len(articles), repr(error))
+        safe_articles = [
+            article
+            for index, item in enumerate(results[:INLINE_LIMIT])
+            if (article := _build_article(item, index, include_thumbnail=False, include_image_preview=False)) is not None
+        ] or [_helper_article(text, kind="empty")]
+        try:
+            await query.answer(safe_articles, cache_time=2, is_personal=True)
+            print("[INLINE][ANSWER_RETRY_OK]", text, len(safe_articles))
+        except TelegramError as retry_error:
+            print("[INLINE][ANSWER_RETRY_FAILED]", text, len(safe_articles), repr(retry_error))
+    except TelegramError as error:
+        print("[INLINE][ANSWER_TELEGRAM_ERROR]", text, len(articles), repr(error))
+    except Exception as error:
+        print("[INLINE][ANSWER_UNEXPECTED]", text, len(articles), repr(error))
