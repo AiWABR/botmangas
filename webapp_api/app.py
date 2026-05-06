@@ -1,44 +1,78 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import html
 import json
 import os
-import re
 import time
-import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from decimal import Decimal, InvalidOperation
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qsl
+from threading import Lock
 
 import httpx
-from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from config import ADMIN_IDS, ANIME_SOURCE, BOT_USERNAME, CAKTO_WEBHOOK_SECRET, SOURCE_SITE_BASE, STICKER_DIVISOR, UPSTREAM_PROXY_URL
-from core.http_client import get_http_client
-from services.animefire_client import (
-    get_anime_details,
-    get_episode_player,
-    get_episodes,
-    invalidate_episode_caches,
-    search_anime,
+from config import (
+    ADMIN_IDS,
+    BASE_DIR,
+    BOT_BRAND,
+    BOT_USERNAME,
+    BOT_TOKEN,
+    CAKTO_NOTIFY_USERS,
+    CAKTO_REQUIRE_WEBHOOK_SECRET,
+    CAKTO_WEBHOOK_SECRET,
+    CACHE_CLEANUP_INTERVAL_SECONDS,
+    CACHE_CLEANUP_STARTUP,
+    DATA_DIR,
+    HOME_SECTION_LIMIT,
+    API_CACHE_MAX_ENTRIES,
+    API_RATE_LIMIT_PER_MINUTE,
+    PREFERRED_CHAPTER_LANG,
+    WEBAPP_CORS_ORIGINS,
+    WEBAPP_TRUST_QUERY_USER_ID,
 )
-from services.recent_episodes_client import get_recent_episodes
+from services.catalog_client import (
+    flatten_chapters,
+    get_cached_title_bundle,
+    get_cached_title_summary,
+    get_chapter_reader_payload,
+    get_home_payload,
+    get_recent_chapters,
+    get_title_bundle,
+    get_title_chapters_snapshot,
+    get_title_search,
+    search_titles,
+)
 from services.cakto_gateway import extract_webhook_secret_values, process_cakto_webhook
-from services.subscriptions import get_active_subscription, init_subscriptions_db
+from services.cache_cleanup import start_cache_cleanup_loop, stop_cache_cleanup_loop
+from services.media_pipeline import resolve_telegraph_asset_path
+from services.metrics import get_last_read_entry, get_recently_read, mark_chapter_read
+from services.offline_access import init_offline_access_db
+from services.offline_messages import offline_welcome_message
+from services.language_prefs import (
+    bundle_language_options,
+    get_user_language,
+    language_options,
+    normalize_language,
+    set_user_language,
+)
 from services.affiliate_db import (
-    admin_list_affiliates,
     admin_list_withdrawals,
+    admin_list_affiliates,
     admin_overview,
     admin_user_snapshot,
     affiliate_summary,
     cents_to_money,
     complete_affiliate_account,
+    get_profile,
     get_settings,
     init_affiliate_db,
     list_commissions,
@@ -50,170 +84,771 @@ from services.affiliate_db import (
     set_pix_key,
     update_setting,
 )
+from services.profile_store import (
+    list_user_favorites,
+    merge_user_favorites,
+    remove_user_favorite,
+    set_user_favorite,
+)
 
-BASE_URL = SOURCE_SITE_BASE or "https://sushianimes.com.br"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Referer": BASE_URL,
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-}
-
-
-def _is_sushi_source() -> bool:
-    return ANIME_SOURCE == "sushi" or "sushianimes" in BASE_URL.lower()
-
-HOME_SECTION_LIMIT = 12
-GRID_PAGE_LIMIT = 24
-
-SECTION_TTL = 60 * 15
-RECENT_TTL = 60
-SEARCH_TTL = 60 * 10
-ANIME_TTL = 60 * 60 * 2
-HERO_TTL = 60 * 10
-PROGRESS_TTL = 60 * 60 * 24 * 30
-MAX_EPISODES_FETCH = 1200
-
-# Episode TTL is intentionally short because video links expire.
-# With ?refresh=1 the cache is bypassed entirely.
-EPISODE_TTL = 60 * 4
-
-# ── Proxy tunables ────────────────────────────────────────────────────────────
-PROXY_TIMEOUT = httpx.Timeout(connect=8.0, read=60.0, write=60.0, pool=10.0)
-PROXY_MAX_RETRIES = 3
-PROXY_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks for fast streaming
-PROXY_KEEPALIVE_EXPIRY = 30     # seconds to keep idle connections alive
-PROXY_MAX_CONNECTIONS = 100
-PROXY_MAX_KEEPALIVE = 20
-
-SECTIONS: dict[str, dict[str, str]] = {
-    "recentes": {"title": "Novos episódios", "kind": "recent"},
-    "em_lancamento": {"title": "Animes recentes", "slug": "em-lancamento"},
-    "atualizados": {"title": "Atualizados", "slug": "animes-atualizados"},
-    "top": {"title": "Em alta", "slug": "top-animes"},
-    "legendados": {"title": "Legendados", "slug": "lista-de-animes-legendados"},
-    "dublados": {"title": "Dublados", "slug": "lista-de-animes-dublados"},
-    "acao": {"title": "Ação", "slug": "genero/acao"},
-    "aventura": {"title": "Aventura", "slug": "genero/aventura"},
-    "comedia": {"title": "Comédia", "slug": "genero/comedia"},
-    "drama": {"title": "Drama", "slug": "genero/drama"},
-    "fantasia": {"title": "Fantasia", "slug": "genero/fantasia"},
-    "romance": {"title": "Romance", "slug": "genero/romance"},
-    "sobrenatural": {"title": "Sobrenatural", "slug": "genero/sobrenatural"},
-    "suspense": {"title": "Suspense", "slug": "genero/suspense"},
-}
-
-BASE_DIR = Path(__file__).resolve().parent.parent
 MINIAPP_DIR = BASE_DIR / "miniapp"
 AFFILIATE_APP_DIR = MINIAPP_DIR / "affiliate"
+PROGRESS_PATH = Path(DATA_DIR) / "miniapp_progress.json"
+_PROGRESS_LOCK = Lock()
 
 app = FastAPI(
-    title="QG BALTIGO API",
-    description="API do miniapp do bot com catálogo, episódios e proxy de vídeo",
-    version="4.0.0",
+    title="Mangas Baltigo API",
+    description="API otimizada do miniapp de mangás",
+    version="2.0.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=WEBAPP_CORS_ORIGINS or ["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=False,
 )
 
-_CACHE: dict[str, dict[str, Any]] = {}
-_LOCKS: dict[str, asyncio.Lock] = {}
-_PROGRESS: dict[str, dict[str, Any]] = {}
-_EVENT_STATE: dict[str, Any] = {"seq": 0, "last": {"type": "boot", "scope": "all", "ts": int(time.time())}}
-
-# ── Global persistent proxy client ───────────────────────────────────────────
-# One client for the entire process lifetime; uses connection pooling and
-# keep-alive so every proxy request re-uses an already-open TCP connection
-# instead of paying the full TLS handshake cost every time.
-_PROXY_CLIENT: httpx.AsyncClient | None = None
+init_offline_access_db()
+init_affiliate_db()
 
 
-def _get_proxy_limits() -> httpx.Limits:
-    return httpx.Limits(
-        max_connections=PROXY_MAX_CONNECTIONS,
-        max_keepalive_connections=PROXY_MAX_KEEPALIVE,
-        keepalive_expiry=PROXY_KEEPALIVE_EXPIRY,
-    )
+@app.on_event("startup")
+async def _startup_cache_cleanup() -> None:
+    first_delay = 0 if CACHE_CLEANUP_STARTUP else CACHE_CLEANUP_INTERVAL_SECONDS
+    start_cache_cleanup_loop(first_delay=first_delay)
 
 
-def _get_proxy_transport() -> httpx.AsyncHTTPTransport:
-    kwargs = {
-        "http1": True,
-        "http2": False,
-        "limits": _get_proxy_limits(),
-    }
-    if UPSTREAM_PROXY_URL:
-        kwargs["proxy"] = UPSTREAM_PROXY_URL
-    if os.getenv("HTTP_FORCE_IPV4", "1").strip() != "0":
-        kwargs["local_address"] = "0.0.0.0"
-    return httpx.AsyncHTTPTransport(**kwargs)
+@app.on_event("shutdown")
+async def _shutdown_cache_cleanup() -> None:
+    await stop_cache_cleanup_loop()
 
 
 class ProgressPayload(BaseModel):
-    user_id: str
-    anime_id: str
-    episode: str
-    watched_seconds: int = 0
-    duration_seconds: int = 0
-    title: str = ""
+    user_id: str = ""
+    init_data: str = ""
+    title_id: str = Field(min_length=1)
+    title_name: str = ""
+    chapter_id: str = Field(min_length=1)
+    chapter_number: str = ""
+    chapter_url: str = ""
+    page_index: int = 0
+    total_pages: int = 0
     cover_url: str = ""
-    completed: bool = False
+    updated_at: int | float | str | None = None
+
+
+class ProgressSyncPayload(BaseModel):
+    user_id: str = ""
+    init_data: str = ""
+    progress: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FavoritePayload(BaseModel):
+    user_id: str = ""
+    init_data: str = ""
+    title_id: str = Field(min_length=1)
+    title: str = ""
+    display_title: str = ""
+    cover_url: str = ""
+    background_url: str = ""
+    latest_chapter: Any = ""
+    latest_chapter_id: Any = ""
+    chapter_id: Any = ""
+    chapter_number: Any = ""
+    status: Any = ""
+    anilist_score: Any = ""
+    rating: Any = ""
+    added_at: int | float | None = None
+    updated_at: int | float | None = None
+    favorite: bool = True
+
+
+class PreferencesPayload(BaseModel):
+    user_id: str = ""
+    init_data: str = ""
+    chapter_language: str = Field(min_length=1)
+
+
+class FavoritesSyncPayload(BaseModel):
+    user_id: str = ""
+    init_data: str = ""
+    favorites: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AffiliatePixPayload(BaseModel):
-    user_id: str
-    pix_key: str
+    user_id: str = ""
+    init_data: str = ""
+    pix_key: str = Field(min_length=3, max_length=180)
 
 
 class AffiliateUserPayload(BaseModel):
-    user_id: str
+    user_id: str = ""
+    init_data: str = ""
 
 
 class AffiliateAccountPayload(BaseModel):
-    user_id: str
-    full_name: str
-    email: str
-    phone: str
+    user_id: str = ""
+    init_data: str = ""
+    full_name: str = Field(min_length=3, max_length=160)
+    email: str = Field(min_length=5, max_length=180)
+    phone: str = Field(min_length=8, max_length=80)
 
 
 class AffiliateAdminActionPayload(BaseModel):
-    admin_user_id: str
+    admin_user_id: str = ""
+    init_data: str = ""
     note: str = ""
 
 
 class AffiliateSettingPayload(BaseModel):
-    admin_user_id: str
-    key: str
-    value: str
+    admin_user_id: str = ""
+    init_data: str = ""
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1, max_length=80)
 
 
-async def get_proxy_client() -> httpx.AsyncClient:
-    global _PROXY_CLIENT
-    if _PROXY_CLIENT is None or _PROXY_CLIENT.is_closed:
-        _PROXY_CLIENT = httpx.AsyncClient(
-            timeout=PROXY_TIMEOUT,
-            follow_redirects=True,
-            transport=_get_proxy_transport(),
-            http2=False,  # many CDNs behave better with HTTP/1.1
+_CACHE: dict[str, dict[str, Any]] = {}
+_CACHE_LOCK = asyncio.Lock()
+_RATE_LIMIT: dict[str, tuple[float, int]] = {}
+_RATE_LIMIT_LOCK = asyncio.Lock()
+_RECENT_TTL = 20
+_HOME_TTL = 25
+_TITLE_TTL = 90
+_CHAPTER_TTL = 90
+_SECTIONS_TTL = 25
+_SEARCH_TTL = 20
+_TITLE_OPEN_TIMEOUT = 22.0
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _safe_int_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    return raw if raw.isdigit() else ""
+
+
+def _validate_telegram_init_data(init_data: str) -> dict[str, Any]:
+    raw = str(init_data or "").strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="MiniApp sem initData do Telegram.")
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="BOT_TOKEN nao configurado para validar MiniApp.")
+
+    pairs = dict(parse_qsl(raw, keep_blank_values=True))
+    received_hash = pairs.pop("hash", "")
+    if not received_hash:
+        raise HTTPException(status_code=401, detail="initData sem assinatura.")
+
+    data_check_string = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
+    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
+    expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_hash, received_hash):
+        raise HTTPException(status_code=401, detail="initData invalido.")
+
+    auth_date = int(pairs.get("auth_date") or 0)
+    if auth_date and time.time() - auth_date > 86400:
+        raise HTTPException(status_code=401, detail="Sessao do MiniApp expirada.")
+
+    try:
+        user = json.loads(pairs.get("user") or "{}")
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Usuario do initData invalido.") from error
+    if not isinstance(user, dict) or not _safe_int_text(user.get("id")):
+        raise HTTPException(status_code=401, detail="Usuario do MiniApp nao identificado.")
+    return {"user": user, "query": pairs}
+
+
+def _request_init_data(request: Request, fallback: str = "") -> str:
+    return (
+        request.headers.get("x-telegram-init-data")
+        or request.query_params.get("init_data")
+        or fallback
+        or ""
+    )
+
+
+def _authenticated_user_id(request: Request, claimed_user_id: Any = "", init_data: str = "") -> str:
+    raw = _request_init_data(request, init_data)
+    if raw:
+        return str(_validate_telegram_init_data(raw)["user"]["id"])
+    claimed = _safe_int_text(claimed_user_id)
+    if WEBAPP_TRUST_QUERY_USER_ID and claimed:
+        return claimed
+    raise HTTPException(status_code=401, detail="Autenticacao do Telegram MiniApp obrigatoria.")
+
+
+def _authenticated_admin_id(request: Request, claimed_user_id: Any = "", init_data: str = "") -> str:
+    user_id = _authenticated_user_id(request, claimed_user_id, init_data)
+    _admin_required(user_id)
+    return user_id
+
+
+def _cache_key(namespace: str, **kwargs: Any) -> str:
+    raw = json.dumps({"ns": namespace, **kwargs}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+async def _cache_get(namespace: str, ttl: int, **kwargs: Any) -> Any | None:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if not entry:
+            return None
+        if entry["expires_at"] < _now():
+            _CACHE.pop(key, None)
+            return None
+        return entry["value"]
+
+
+async def _cache_set(namespace: str, value: Any, ttl: int, **kwargs: Any) -> Any:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        _CACHE[key] = {
+            "value": value,
+            "expires_at": _now() + ttl,
+        }
+        if len(_CACHE) > max(100, API_CACHE_MAX_ENTRIES):
+            expired_or_old = sorted(
+                _CACHE.items(),
+                key=lambda item: item[1].get("expires_at") or item[1].get("soft_expires_at") or 0,
+            )
+            for old_key, _ in expired_or_old[: max(1, len(_CACHE) - API_CACHE_MAX_ENTRIES)]:
+                _CACHE.pop(old_key, None)
+    return value
+
+
+async def _cached(namespace: str, ttl: int, producer, **kwargs: Any) -> Any:
+    cached = await _cache_get(namespace, ttl, **kwargs)
+    if cached is not None:
+        return cached
+    value = await producer()
+    return await _cache_set(namespace, value, ttl, **kwargs)
+
+
+async def _stale_while_revalidate(namespace: str, ttl: int, stale_ttl: int, producer, **kwargs: Any) -> Any:
+    key = _cache_key(namespace, **kwargs)
+    async with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry and entry["soft_expires_at"] >= _now():
+            return entry["value"]
+        if entry and entry["hard_expires_at"] >= _now():
+            if not entry.get("refreshing"):
+                entry["refreshing"] = True
+                asyncio.create_task(_refresh_cache_entry(key, producer, ttl, stale_ttl))
+            return entry["value"]
+
+    value = await producer()
+    async with _CACHE_LOCK:
+        _CACHE[key] = {
+            "value": value,
+            "soft_expires_at": _now() + ttl,
+            "hard_expires_at": _now() + stale_ttl,
+            "refreshing": False,
+        }
+    return value
+
+
+async def _refresh_cache_entry(key: str, producer, ttl: int, stale_ttl: int) -> None:
+    try:
+        value = await producer()
+        async with _CACHE_LOCK:
+            _CACHE[key] = {
+                "value": value,
+                "soft_expires_at": _now() + ttl,
+                "hard_expires_at": _now() + stale_ttl,
+                "refreshing": False,
+            }
+    except Exception:
+        async with _CACHE_LOCK:
+            if key in _CACHE:
+                _CACHE[key]["refreshing"] = False
+
+
+async def _invalidate_prefix(namespace: str) -> None:
+    async with _CACHE_LOCK:
+        for key in list(_CACHE.keys()):
+            _CACHE.pop(key, None)
+
+
+def _load_progress() -> dict[str, dict[str, Any]]:
+    if not PROGRESS_PATH.exists():
+        return {}
+    try:
+        return json.loads(PROGRESS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_progress(data: dict[str, dict[str, Any]]) -> None:
+    PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = PROGRESS_PATH.with_suffix(PROGRESS_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, PROGRESS_PATH)
+
+
+def _progress_key(user_id: str, title_id: str) -> str:
+    return f"{user_id}:{title_id}"
+
+
+def _public_last_read(entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not entry:
+        return None
+    return {
+        "title_id": entry.get("title_id") or "",
+        "title_name": entry.get("title_name") or "",
+        "chapter_id": entry.get("chapter_id") or "",
+        "chapter_number": entry.get("chapter_number") or "",
+        "updated_at": entry.get("updated_at") or "",
+        "page_index": int(entry.get("page_index") or 0),
+        "total_pages": int(entry.get("total_pages") or 0),
+    }
+
+
+def _public_updated_at_ms(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return int(time.time() * 1000)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return int(datetime.strptime(text[:19], fmt).replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            pass
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return int(time.time() * 1000)
+
+
+def _public_history_item(user_id: str, item: dict[str, Any], progress_data: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    title_id = item.get("title_id") or ""
+    progress = progress_data.get(_progress_key(user_id, title_id)) or {}
+    page_index = int(progress.get("page_index") or 1)
+    total_pages = int(progress.get("total_pages") or 0)
+
+    return {
+        "title_id": title_id,
+        "title_name": item.get("title_name") or progress.get("title_name") or "",
+        "chapter_id": item.get("chapter_id") or progress.get("chapter_id") or "",
+        "chapter_number": item.get("chapter_number") or progress.get("chapter_number") or "",
+        "chapter_url": item.get("chapter_url") or progress.get("chapter_url") or "",
+        "page_index": page_index,
+        "total_pages": total_pages,
+        "cover_url": progress.get("cover_url") or "",
+        "updated_at": _public_updated_at_ms(progress.get("updated_at") or item.get("updated_at")),
+    }
+
+
+def _public_chapter(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not item:
+        return None
+    return {
+        "chapter_id": item.get("chapter_id") or "",
+        "chapter_number": item.get("chapter_number") or "",
+        "chapter_language": item.get("chapter_language") or "",
+        "chapter_volume": item.get("chapter_volume") or "",
+        "group_name": item.get("group_name") or "",
+        "updated_at": item.get("updated_at") or "",
+    }
+
+
+def _has_real_chapter(item: dict[str, Any]) -> bool:
+    return bool((item.get("chapter_id") or "").strip())
+
+
+def _public_title_item(item: dict[str, Any]) -> dict[str, Any]:
+    latest_value = item.get("latest_chapter")
+    if isinstance(latest_value, dict):
+        latest_value = latest_value.get("chapter_number") or latest_value.get("chapter_id") or ""
+
+    return {
+        "title_id": item.get("title_id") or "",
+        "chapter_id": item.get("chapter_id") or "",
+        "title": item.get("display_title") or item.get("title") or "",
+        "cover_url": item.get("cover_url") or "",
+        "background_url": item.get("background_url") or item.get("cover_url") or "",
+        "status": item.get("status") or "",
+        "rating": item.get("rating") or "",
+        "updated_at": item.get("updated_at") or "",
+        "latest_chapter": latest_value or "",
+        "chapter_number": item.get("chapter_number") or latest_value or "",
+        "adult": bool(item.get("adult")),
+    }
+
+
+def _sorted_filtered_chapters(bundle: dict[str, Any], lang: str) -> list[dict[str, Any]]:
+    chapters = flatten_chapters({"chapters": bundle.get("chapters") or []}, lang)
+    clean = [c for c in chapters if _has_real_chapter(c)]
+
+    def chapter_sort(item: dict[str, Any]) -> tuple[float, str]:
+        raw = str(item.get("chapter_number") or "").strip()
+        try:
+            return (float(raw), item.get("updated_at") or "")
+        except Exception:
+            return (-1.0, item.get("updated_at") or "")
+
+    clean.sort(key=chapter_sort, reverse=True)
+    return clean
+
+
+def _public_title_bundle(bundle: dict[str, Any], lang: str) -> dict[str, Any]:
+    resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+    chapters = _sorted_filtered_chapters(bundle, resolved_lang)
+    latest = next((item for item in chapters if item.get("chapter_id")), None)
+    chapters_partial = bool(bundle.get("chapters_partial") or bundle.get("partial"))
+    try:
+        source_total_chapters = int(
+            bundle.get("source_total_chapters")
+            if bundle.get("source_total_chapters") not in (None, "")
+            else bundle.get("total_chapters") or 0
         )
-    return _PROXY_CLIENT
+    except (TypeError, ValueError):
+        source_total_chapters = 0
+
+    try:
+        estimated_total_chapters = int(bundle.get("anilist_chapters") or 0)
+    except (TypeError, ValueError):
+        estimated_total_chapters = 0
+
+    total_chapters = len(chapters) or source_total_chapters
+
+    return {
+        "title_id": bundle.get("title_id") or "",
+        "title": bundle.get("display_title") or bundle.get("title") or "",
+        "preferred_title": bundle.get("preferred_title") or "",
+        "alt_titles": bundle.get("alt_titles") or [],
+        "description": bundle.get("description") or bundle.get("anilist_description") or "",
+        "cover_url": bundle.get("cover_url") or "",
+        "background_url": bundle.get("background_url") or bundle.get("cover_url") or "",
+        "banner_url": bundle.get("banner_url") or bundle.get("background_url") or bundle.get("cover_url") or "",
+        "cover_color": bundle.get("cover_color") or "",
+        "status": bundle.get("status") or bundle.get("anilist_status") or "",
+        "rating": bundle.get("rating") or "",
+        "genres": bundle.get("genres") or [],
+        "authors": bundle.get("authors") or [],
+        "published": bundle.get("published") or "",
+        "languages": bundle.get("languages") or [],
+        "language_options": bundle_language_options(bundle),
+        "current_language": resolved_lang,
+        "total_chapters": total_chapters,
+        "source_total_chapters": source_total_chapters,
+        "estimated_total_chapters": estimated_total_chapters,
+        "chapters_partial": chapters_partial,
+        "metadata_partial": bool(bundle.get("metadata_partial")),
+        "chapters_error": bundle.get("chapters_error") or bundle.get("error") or "",
+        "anilist_url": bundle.get("anilist_url") or "",
+        "anilist_score": bundle.get("anilist_score") or 0,
+        "anilist_format": bundle.get("anilist_format") or "",
+        "anilist_status": bundle.get("anilist_status") or "",
+        "anilist_chapters": bundle.get("anilist_chapters") or 0,
+        "anilist_volumes": bundle.get("anilist_volumes") or 0,
+        "adult": bool(bundle.get("adult")),
+        "chapters": [_public_chapter(item) for item in chapters],
+        "latest_chapter": _public_chapter(latest or bundle.get("latest_chapter")),
+    }
 
 
-# =============================================================================
-# HELPERS
-# =============================================================================
+def _partial_title_payload(title_id: str, error: str = "") -> dict[str, Any]:
+    summary = get_cached_title_summary(title_id) or {}
+    latest = summary.get("latest_chapter")
+    latest_chapter = None
+    if isinstance(latest, dict):
+        latest_chapter = latest
+    elif summary.get("chapter_id"):
+        latest_chapter = {
+            "chapter_id": summary.get("chapter_id") or "",
+            "chapter_number": str(latest or "").strip(),
+            "chapter_language": summary.get("language") or PREFERRED_CHAPTER_LANG,
+        }
 
-def _clean(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip()
+    display_title = (
+        summary.get("display_title")
+        or summary.get("title")
+        or "Manga"
+    )
+    cover_url = summary.get("cover_url") or ""
+    try:
+        source_total_chapters = int(
+            summary.get("source_total_chapters")
+            if summary.get("source_total_chapters") not in (None, "")
+            else summary.get("chapters_count") or summary.get("chapter_count") or 0
+        )
+    except (TypeError, ValueError):
+        source_total_chapters = 0
+
+    return _public_title_bundle(
+        {
+            "title_id": title_id,
+            "title": display_title,
+            "display_title": display_title,
+            "cover_url": cover_url,
+            "background_url": summary.get("background_url") or cover_url,
+            "status": summary.get("status") or summary.get("anilist_status") or "carregando",
+            "rating": summary.get("rating") or summary.get("anilist_score") or "",
+            "genres": summary.get("genres") or summary.get("anilist_genres") or [],
+            "chapters": [],
+            "languages": [],
+            "total_chapters": source_total_chapters,
+            "source_total_chapters": source_total_chapters,
+            "anilist_chapters": summary.get("anilist_chapters") or 0,
+            "latest_chapter": latest_chapter,
+            "chapters_partial": True,
+            "chapters_error": error,
+        },
+        PREFERRED_CHAPTER_LANG,
+    )
+
+
+def _public_reader_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    images = [img for img in (payload.get("images") or []) if str(img or "").strip()]
+    return {
+        "title_id": payload.get("title_id") or "",
+        "title": payload.get("title") or "",
+        "chapter_id": payload.get("chapter_id") or "",
+        "chapter_number": payload.get("chapter_number") or "",
+        "chapter_language": payload.get("chapter_language") or "",
+        "chapter_volume": payload.get("chapter_volume") or "",
+        "cover_url": payload.get("cover_url") or "",
+        "image_count": len(images),
+        "images": images,
+        "total_chapters": payload.get("total_chapters") or 0,
+        "previous_chapter": _public_chapter(payload.get("previous_chapter")),
+        "next_chapter": _public_chapter(payload.get("next_chapter")),
+    }
+
+
+def _normalize_query(text: str) -> str:
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", (text or "").strip().lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _search_score(query: str, item: dict[str, Any]) -> tuple[int, int, int]:
+    q = _normalize_query(query)
+    title = _normalize_query(item.get("title") or item.get("preferred_title") or item.get("display_title") or "")
+    tags = [_normalize_query(tag) for tag in (item.get("genres") or [])]
+
+    if not q:
+        return (0, 0, 0)
+    if title == q:
+        return (500, 0, -len(title))
+    if title.startswith(q):
+        return (400, 0, -len(title))
+    if q in title:
+        return (300, 0, -len(title))
+    if any(q in tag for tag in tags):
+        return (220, 0, -len(title))
+
+    overlap = len(set(q.split()) & set(title.split()))
+    return (100 + overlap * 10, 0, -len(title))
+
+
+async def _search_with_suggestions(query: str, limit: int) -> dict[str, Any]:
+    raw_results = await _cached(
+        "search",
+        _SEARCH_TTL,
+        lambda: search_titles(query, limit=max(20, limit * 3)),
+        query=query,
+        limit=max(20, limit * 3),
+    )
+
+    candidates = []
+    for item in raw_results:
+        if not item.get("title_id"):
+            continue
+        candidates.append(item)
+
+    ranked = sorted(candidates, key=lambda item: _search_score(query, item), reverse=True)
+    ranked = ranked[:limit]
+
+    if ranked:
+        return {
+            "query": query,
+            "results": [_public_title_item(item) for item in ranked],
+            "suggestions": [],
+        }
+
+    home = await _home_payload(limit=max(10, limit))
+    pool = []
+    for key in ("featured", "popular", "recent_titles", "latest_titles"):
+        pool.extend(home.get(key) or [])
+
+    seen: set[str] = set()
+    dedup_pool = []
+    for item in pool:
+        title_id = item.get("title_id") or ""
+        if not title_id or title_id in seen:
+            continue
+        seen.add(title_id)
+        dedup_pool.append(item)
+
+    suggestions = sorted(dedup_pool, key=lambda item: _search_score(query, item), reverse=True)[:6]
+    return {
+        "query": query,
+        "results": [],
+        "suggestions": [_public_title_item(item) for item in suggestions if item.get("title_id")],
+    }
+
+
+async def _home_payload(limit: int) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        payload, recent_chapters = await asyncio.gather(
+            get_home_payload(limit=limit),
+            get_recent_chapters(limit=min(limit * 2, 24)),
+        )
+
+        featured = [_public_title_item(item) for item in (payload.get("featured") or []) if _has_real_chapter(item)]
+        popular = [_public_title_item(item) for item in (payload.get("popular") or []) if _has_real_chapter(item)]
+        recent_titles = [_public_title_item(item) for item in (payload.get("recent_titles") or []) if _has_real_chapter(item)]
+        latest_titles = [_public_title_item(item) for item in (payload.get("latest_titles") or []) if _has_real_chapter(item)]
+
+        public_recent_chapters = []
+        seen_chapters: set[str] = set()
+        for item in recent_chapters:
+            chapter_id = item.get("chapter_id") or ""
+            if not chapter_id or chapter_id in seen_chapters:
+                continue
+            seen_chapters.add(chapter_id)
+            public_recent_chapters.append(_public_title_item(item))
+
+        latest_titles.sort(
+            key=lambda item: (item.get("updated_at") or "", item.get("latest_chapter") or ""),
+            reverse=True,
+        )
+        public_recent_chapters.sort(
+            key=lambda item: (
+                item.get("updated_at") or "",
+                item.get("chapter_number") or item.get("latest_chapter") or "",
+            ),
+            reverse=True,
+        )
+
+        return {
+            "featured": featured[:limit],
+            "popular": popular[:limit],
+            "recent_titles": recent_titles[:limit],
+            "latest_titles": latest_titles[:limit],
+            "recent_chapters": public_recent_chapters[: max(limit, 12)],
+        }
+
+    return await _stale_while_revalidate("home", _HOME_TTL, _HOME_TTL * 3, producer, limit=limit)
+
+
+async def _title_payload(title_id: str, lang: str, user_id: str = "") -> dict[str, Any]:
+    cache_kwargs = {"title_id": title_id, "lang": lang, "user_id": user_id}
+    cached = await _cache_get("title", _TITLE_TTL, **cache_kwargs)
+    if cached is not None and not cached.get("chapters_partial") and not cached.get("metadata_partial"):
+        return cached
+
+    def attach_user_data(public_bundle: dict[str, Any]) -> dict[str, Any]:
+        if user_id:
+            public_bundle["last_read"] = _public_last_read(get_last_read_entry(user_id, public_bundle["title_id"]))
+        return public_bundle
+
+    def refresh_full_bundle() -> None:
+        async def runner() -> None:
+            try:
+                await get_title_bundle(title_id, lang)
+            except Exception as error:
+                print("[WEBAPP][TITLE_REFRESH_FAIL]", title_id, repr(error))
+
+        try:
+            asyncio.create_task(runner())
+        except RuntimeError:
+            pass
+
+    catalog_cached = get_cached_title_bundle(title_id, lang)
+    if catalog_cached is not None and catalog_cached.get("chapters"):
+        public_cached = attach_user_data(_public_title_bundle(catalog_cached, lang))
+        if public_cached.get("metadata_partial"):
+            refresh_full_bundle()
+            return public_cached
+        return await _cache_set("title", public_cached, _TITLE_TTL, **cache_kwargs)
+
+    async def producer() -> dict[str, Any]:
+        try:
+            snapshot = await asyncio.wait_for(
+                get_title_chapters_snapshot(title_id, lang),
+                timeout=min(_TITLE_OPEN_TIMEOUT, 4.5),
+            )
+            if snapshot.get("chapters"):
+                refresh_full_bundle()
+                return attach_user_data(_public_title_bundle(snapshot, lang))
+        except Exception as error:
+            print("[WEBAPP][TITLE_SNAPSHOT_PARTIAL]", title_id, repr(error))
+
+        try:
+            bundle = await asyncio.wait_for(
+                get_title_bundle(title_id, lang),
+                timeout=_TITLE_OPEN_TIMEOUT,
+            )
+        except Exception as error:
+            print("[WEBAPP][TITLE_PARTIAL]", title_id, repr(error))
+            return _partial_title_payload(title_id, repr(error))
+
+        return attach_user_data(_public_title_bundle(bundle, lang))
+
+    value = await producer()
+    if value.get("chapters_partial") or value.get("metadata_partial"):
+        return value
+    return await _cache_set("title", value, _TITLE_TTL, **cache_kwargs)
+
+
+async def _chapter_payload(chapter_id: str, lang: str) -> dict[str, Any]:
+    async def producer() -> dict[str, Any]:
+        payload = await get_chapter_reader_payload(chapter_id, lang)
+        return _public_reader_payload(payload)
+
+    return await _cached("chapter", _CHAPTER_TTL, producer, chapter_id=chapter_id, lang=lang)
+
+
+@app.get("/api/ping")
+async def ping() -> dict[str, bool]:
+    return {"ok": True}
+
+
+def _cakto_secret_candidates(request: Request, payload: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+
+    for key in ("secret", "token"):
+        value = request.query_params.get(key)
+        if value:
+            candidates.append(value.strip())
+
+    for header_name in (
+        "x-cakto-secret",
+        "x-webhook-secret",
+        "x-secret",
+        "x-cakto-token",
+    ):
+        value = request.headers.get(header_name)
+        if value:
+            candidates.append(value.strip())
+
+    authorization = request.headers.get("authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        candidates.append(authorization.split(" ", 1)[1].strip())
+    elif authorization:
+        candidates.append(authorization)
+
+    candidates.extend(extract_webhook_secret_values(payload))
+    return [item for item in candidates if item]
+
+
+def _cakto_secret_is_valid(request: Request, payload: dict[str, Any]) -> bool:
+    expected = (CAKTO_WEBHOOK_SECRET or "").strip()
+    if not expected:
+        return not CAKTO_REQUIRE_WEBHOOK_SECRET
+    return expected in _cakto_secret_candidates(request, payload)
 
 
 def _is_admin_user(user_id: str | int | None) -> bool:
@@ -230,1091 +865,138 @@ def _admin_required(user_id: str | int | None) -> None:
 
 def _money_fields(item: dict[str, Any]) -> dict[str, Any]:
     result = dict(item)
-    for key in (
-        "amount_cents",
-        "commission_amount_cents",
-        "sale_amount_cents",
-        "available_cents",
-        "pending_cents",
-        "paid_cents",
-        "withdrawal_pending_cents",
-        "canceled_cents",
-    ):
+    for key in ("amount_cents", "commission_amount_cents", "sale_amount_cents", "available_cents", "pending_cents", "paid_cents", "withdrawal_pending_cents", "canceled_cents"):
         if key in result:
             result[key.replace("_cents", "") + "_formatted"] = cents_to_money(result.get(key))
     return result
 
 
-def _normalize_text(value: str) -> str:
-    value = unicodedata.normalize("NFKD", _clean(value).lower())
-    value = "".join(ch for ch in value if not unicodedata.combining(ch))
-    value = re.sub(r"[^a-z0-9\s-]", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+async def _notify_cakto_user(result: dict[str, Any]) -> None:
+    if not CAKTO_NOTIFY_USERS or not BOT_TOKEN:
+        return
 
+    access = result.get("access") or {}
+    if access.get("duplicate_event"):
+        return
 
-def _tokenize(value: str) -> list[str]:
-    return [token for token in _normalize_text(value).split(" ") if token]
+    user_id = result.get("user_id")
+    if not user_id:
+        return
 
+    action = result.get("action")
+    brand = html.escape(BOT_BRAND or "Mangas Baltigo")
 
-def _score_text_match(query: str, *values: str) -> int:
-    q = _normalize_text(query)
-    if not q:
-        return 0
-    score = 0
-    q_tokens = _tokenize(q)
-    for raw in values:
-        value = _normalize_text(raw)
-        if not value:
-            continue
-        if value == q:
-            score = max(score, 200)
-        elif value.startswith(q):
-            score = max(score, 170)
-        elif q in value:
-            score = max(score, 140)
-        token_hits = sum(1 for token in q_tokens if token and token in value)
-        score = max(score, min(120, token_hits * 25))
-    return score
-
-
-def _suggestions(query: str, values: list[str], limit: int = 5) -> list[str]:
-    import difflib
-    q = _normalize_text(query)
-    pairs = []
-    seen: set[str] = set()
-    for value in values:
-        cleaned = _clean(value)
-        if not cleaned:
-            continue
-        norm = _normalize_text(cleaned)
-        if norm in seen:
-            continue
-        seen.add(norm)
-        ratio = difflib.SequenceMatcher(None, q, norm).ratio()
-        if q and q in norm:
-            ratio += 0.25
-        pairs.append((ratio, cleaned))
-    pairs.sort(key=lambda item: (-item[0], item[1].lower()))
-    return [value for ratio, value in pairs if ratio >= 0.35][:limit]
-
-
-def _emit_event(kind: str, scope: str = "all") -> None:
-    _EVENT_STATE["seq"] += 1
-    _EVENT_STATE["last"] = {
-        "id": _EVENT_STATE["seq"],
-        "type": kind,
-        "scope": scope,
-        "ts": int(time.time()),
-    }
-
-
-def _clean_description(text: str) -> str:
-    text = text or ""
-    junk_patterns = [
-        r"Oie.*?Clique Aqui",
-        r"Reportar Erro:.*",
-        r"Publicado Dia:.*",
-        r"Dê o máximo de detalhes.*",
-        r"se o vídeo não carregar.*",
-        r"quer ser notificado sempre que um episódio novo for lançado\?.*",
-        r"Clique aqui.*",
-        r"assista também.*",
-        r"veja também.*",
-    ]
-    for pattern in junk_patterns:
-        text = re.sub(pattern, "", text, flags=re.IGNORECASE | re.DOTALL)
-    return _clean(text)
-
-
-def _clean_genres(genres: list[str] | None) -> list[str]:
-    if not genres:
-        return []
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    skip_prefixes = ("animes de ", "oie", "clique")
-    for genre in genres:
-        g = _clean(str(genre))
-        if not g:
-            continue
-        gl = g.lower()
-        if any(gl.startswith(prefix) for prefix in skip_prefixes):
-            continue
-        if g not in seen:
-            seen.add(g)
-            cleaned.append(g)
-    return cleaned
-
-
-def _clean_alt_titles(values: list[str] | None) -> list[str]:
-    if not values:
-        return []
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        v = _clean_description(str(value))
-        if not v or len(v) > 120:
-            continue
-        if v not in seen:
-            seen.add(v)
-            cleaned.append(v)
-    return cleaned
-
-
-def _is_dubbed(anime_id: str, title: str) -> bool:
-    value_id = (anime_id or "").lower()
-    value_title = (title or "").lower()
-    return (
-        "dublado" in value_id
-        or "dublado" in value_title
-        or "(dub)" in value_title
-    )
-
-
-def _section_conf(section: str) -> dict[str, str] | None:
-    return SECTIONS.get((section or "").strip().lower())
-
-
-def _section_url(slug: str, page: int) -> str:
-    if _is_sushi_source():
-        return BASE_URL
-    if page <= 1:
-        return f"{BASE_URL}/{slug}"
-    return f"{BASE_URL}/{slug}/{page}"
-
-
-def _cache_get(key: str, ttl: int) -> Any | None:
-    item = _CACHE.get(key)
-    if not item:
-        return None
-    if time.time() - item["ts"] > ttl:
-        _CACHE.pop(key, None)
-        return None
-    return item["data"]
-
-
-def _cache_set(key: str, data: Any) -> Any:
-    _CACHE[key] = {"ts": time.time(), "data": data}
-    return data
-
-
-async def _cached(key: str, ttl: int, factory) -> Any:
-    cached = _cache_get(key, ttl)
-    if cached is not None:
-        return cached
-
-    lock = _LOCKS.setdefault(key, asyncio.Lock())
-    async with lock:
-        cached = _cache_get(key, ttl)
-        if cached is not None:
-            return cached
-        data = await factory()
-        return _cache_set(key, data)
-
-
-def _invalidate_key(key: str) -> None:
-    _CACHE.pop(key, None)
-
-
-def _invalidate_prefix(prefix: str) -> None:
-    for key in list(_CACHE.keys()):
-        if key.startswith(prefix):
-            _CACHE.pop(key, None)
-
-
-async def _get(url: str) -> str:
-    client = await get_http_client()
-    response = await client.get(url, headers=HEADERS)
-    response.raise_for_status()
-    return response.text
-
-
-def _extract_slug_from_href(href: str) -> str:
-    href = (href or "").strip()
-    if _is_sushi_source():
-        match = re.search(r"/anime/([^/?#]+?)(?:/)?(?:\?.*)?$", href)
-        if not match:
-            return ""
-        slug = match.group(1).strip()
-        ep_match = re.search(r"^(.+)-\d+-season-\d+-episode$", slug)
-        return ep_match.group(1) if ep_match else slug
-    match = re.search(r"/animes/([^/?#]+?)(?:/)?(?:\?.*)?$", href)
-    return match.group(1).strip() if match else ""
-
-
-def _title_from_slug(slug: str) -> str:
-    value = str(slug or "").strip("/")
-    value = re.sub(r"-\d+-season-\d+-episode$", "", value)
-    value = re.sub(r"-\d+$", "", value)
-    return value.replace("-", " ").title()
-
-
-def _extract_last_page(page_html: str, slug: str) -> int:
-    if _is_sushi_source():
-        return 1
-    soup = BeautifulSoup(page_html, "html.parser")
-    max_page = 1
-    for anchor in soup.select("a[href]"):
-        href = (anchor.get("href") or "").strip()
-        pattern = rf"/{re.escape(slug)}/(\d+)(?:/)?(?:\?.*)?$"
-        match = re.search(pattern, href)
-        if match:
-            max_page = max(max_page, int(match.group(1)))
-    return max_page
-
-
-def _extract_listing_cards(page_html: str) -> list[dict]:
-    soup = BeautifulSoup(page_html, "html.parser")
-    found: dict[str, dict] = {}
-    selector = "a[href*='/anime/']" if _is_sushi_source() else "a[href*='/animes/']"
-    for anchor in soup.select(selector):
-        href = (anchor.get("href") or "").strip()
-        anime_id = _extract_slug_from_href(href)
-        if not anime_id:
-            continue
-
-        title = ""
-        title_el = anchor.select_one(".animeTitle")
-        if title_el:
-            title = _clean(title_el.get_text(" ", strip=True))
-
-        img = anchor.find("img")
-        cover = ""
-        if img:
-            cover = img.get("data-src") or img.get("src") or ""
-            title = title or _clean(img.get("alt") or "")
-
-        title = title or _title_from_slug(anime_id)
-        dubbed = _is_dubbed(anime_id, title)
-
-        found[anime_id] = {
-            "id": anime_id,
-            "title": title,
-            "display_title": f"[{'DUB' if dubbed else 'LEG'}] {title}",
-            "prefix": "DUB" if dubbed else "LEG",
-            "is_dubbed": dubbed,
-            "cover_url": cover,
-            "banner_url": cover,
-            "description": "",
-            "genres": [],
-            "score": None,
-            "status": "",
-            "episodes": None,
-            "year": None,
-            "studio": "",
-            "url": urljoin(BASE_URL, href),
-        }
-    return list(found.values())
-
-
-def _sushi_section_matches(item: dict[str, Any], section: str) -> bool:
-    text = _normalize_text(" ".join([
-        str(item.get("id") or ""),
-        str(item.get("title") or ""),
-        " ".join(str(g) for g in item.get("genres") or []),
-    ]))
-    is_dubbed = bool(item.get("is_dubbed"))
-    if section == "dublados":
-        return is_dubbed
-    if section == "legendados":
-        return not is_dubbed
-    aliases = {
-        "acao": ("acao", "action", "battle", "shounen", "shonen"),
-        "aventura": ("aventura", "adventure", "isekai"),
-        "comedia": ("comedia", "comedy"),
-        "drama": ("drama",),
-        "fantasia": ("fantasia", "fantasy", "isekai", "mahou"),
-        "romance": ("romance", "romantico", "shoujo", "shojo"),
-        "sobrenatural": ("sobrenatural", "supernatural", "youkai", "yokai"),
-        "suspense": ("suspense", "misterio", "mystery", "thriller"),
-    }
-    if section in aliases:
-        return any(alias in text for alias in aliases[section])
-    return True
-
-
-def _score_value(item: dict[str, Any]) -> float:
-    try:
-        return float(str(item.get("score") or "0").split("/", 1)[0] or 0)
-    except Exception:
-        return 0.0
-
-
-async def _enrich_sushi_home_cards(raw_items: list[dict[str, Any]], section: str) -> list[dict[str, Any]]:
-    shaped_items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in raw_items:
-        anime_id = item.get("id") or ""
-        if not anime_id or anime_id in seen:
-            continue
-        seen.add(anime_id)
-        shaped = item
-        if _has_minimum_catalog_fields(shaped) and _sushi_section_matches(shaped, section):
-            shaped_items.append(shaped)
-        if len(shaped_items) >= GRID_PAGE_LIMIT * 3:
-            break
-    return shaped_items
-
-
-def _shape_details(data: dict, fallback_id: str = "") -> dict:
-    anime_id = data.get("id") or fallback_id
-    title = data.get("title") or anime_id.replace("-", " ").title()
-    dubbed = bool(data.get("is_dubbed")) or _is_dubbed(anime_id, title)
-    return {
-        "id": anime_id,
-        "title": title,
-        "display_title": f"[{'DUB' if dubbed else 'LEG'}] {title}",
-        "prefix": "DUB" if dubbed else "LEG",
-        "is_dubbed": dubbed,
-        "cover_url": (
-            data.get("cover_url")
-            or data.get("media_image_url")
-            or data.get("banner_url")
-            or ""
-        ),
-        "banner_url": (
-            data.get("banner_url")
-            or data.get("cover_url")
-            or data.get("media_image_url")
-            or ""
-        ),
-        "description": _clean_description(data.get("description") or ""),
-        "genres": _clean_genres(data.get("genres") or []),
-        "score": data.get("score"),
-        "status": data.get("status") or "",
-        "episodes": data.get("episodes"),
-        "year": data.get("season_year"),
-        "season": data.get("season") or "",
-        "seasons": data.get("seasons") or [],
-        "studio": _clean(data.get("studio") or ""),
-        "alt_titles": _clean_alt_titles(data.get("alt_titles") or []),
-    }
-
-
-def _shape_episode_payload(anime_id: str, episode: str, quality: str, item: dict) -> dict:
-    video = item.get("video") or ""
-    videos = item.get("videos") or {}
-    available_qualities = item.get("available_qualities") or []
-
-    if not available_qualities and isinstance(videos, dict):
-        available_qualities = list(videos.keys())
-
-    if not video and isinstance(videos, dict):
-        normalized_quality = (quality or "HD").upper()
-        video = (
-            videos.get(normalized_quality)
-            or videos.get("HD")
-            or videos.get("SD")
-            or ""
+    if action == "granted":
+        plan = html.escape(result.get("plan_label") or access.get("plan_label") or "plano")
+        expires_at = access.get("expires_at") or "vitalício"
+        text = (
+            "✅ <b>Leitura offline liberada!</b>\n\n"
+            f"» <b>Plano:</b> <i>{plan}</i>\n"
+            f"» <b>Validade:</b> <i>{html.escape(str(expires_at))}</i>\n\n"
+            f"Agora o envio de todos os capítulos em PDF está ativo no <b>{brand}</b>."
         )
+    elif action == "revoked":
+        text = (
+            "🔒 <b>Leitura offline bloqueada</b>\n\n"
+            "A Cakto avisou cancelamento, reembolso ou chargeback dessa assinatura."
+        )
+    else:
+        return
 
-    return {
-        "anime_id": anime_id,
-        "episode": episode,
-        "video": video,
-        "videos": videos,
-        "quality": item.get("quality") or quality.upper(),
-        "available_qualities": available_qualities,
-        "title": item.get("title") or item.get("episode_title") or "",
-        "description": _clean_description(item.get("description") or ""),
-        "thumb": item.get("thumb") or item.get("image") or "",
-        "is_dubbed": bool(item.get("is_dubbed")),
-        "prev_episode": item.get("prev_episode"),
-        "next_episode": item.get("next_episode"),
-        "total_episodes": item.get("total_episodes"),
-    }
-
-
-def _parse_episode_number(value: str | int | float | None) -> Decimal | None:
-    raw = str(value or "").strip().replace(",", ".")
-    season_match = re.search(r"^[sS]?(\d+)[eE:.-](\d+)$", raw)
-    if season_match:
-        return Decimal(int(season_match.group(1)) * 10000 + int(season_match.group(2)))
-    match = re.search(r"\d+(?:\.\d+)?", raw)
-    if not match:
-        return None
     try:
-        return Decimal(match.group(0))
-    except InvalidOperation:
-        return None
-
-
-def _episode_score(item: dict[str, Any]) -> int:
-    score = 0
-    if item.get("title"):
-        score += 2
-    if item.get("description"):
-        score += 1
-    if item.get("thumb") or item.get("image"):
-        score += 1
-    if item.get("video"):
-        score += 3
-    return score
-
-
-def _normalize_episode_item(ep: dict[str, Any]) -> dict[str, Any]:
-    value = dict(ep or {})
-    number = value.get("number") or value.get("episode") or value.get("ep") or value.get("slug") or ""
-    parsed = _parse_episode_number(number)
-    value["number"] = str(number).strip()
-    value["_sort_number"] = parsed if parsed is not None else Decimal("999999")
-    value["_sort_title"] = _clean(str(value.get("title") or value.get("number") or ""))
-    value["_score"] = _episode_score(value)
-    return value
-
-
-def _normalize_episodes(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    if not items:
-        return []
-
-    dedup: dict[str, dict[str, Any]] = {}
-    for raw in items:
-        item = _normalize_episode_item(raw)
-        number = item.get("number") or item.get("_sort_title") or "sem-numero"
-        key = f"{number}|{item.get('url') or item.get('slug') or item.get('_sort_title')}"
-        previous = dedup.get(key)
-        if previous is None or item.get("_score", 0) >= previous.get("_score", 0):
-            dedup[key] = item
-
-    ordered = sorted(dedup.values(), key=lambda x: (x.get("_sort_number", Decimal("999999")), x.get("_sort_title", "")))
-    cleaned: list[dict[str, Any]] = []
-    total = len(ordered)
-    for index, item in enumerate(ordered):
-        item.pop("_score", None)
-        item.pop("_sort_title", None)
-        item.pop("_sort_number", None)
-        item["prev_episode"] = ordered[index - 1]["number"] if index > 0 else None
-        item["next_episode"] = ordered[index + 1]["number"] if index < total - 1 else None
-        item["total_episodes"] = total
-        cleaned.append(item)
-    return cleaned
-
-
-def _has_minimum_catalog_fields(item: dict[str, Any]) -> bool:
-    if _is_sushi_source():
-        return bool(item.get("id") and item.get("title"))
-    return bool(item.get("id") and item.get("title") and (item.get("cover_url") or item.get("banner_url")))
-
-
-def _truncate_description(text: str, size: int = 220) -> str:
-    value = _clean_description(text)
-    if len(value) <= size:
-        return value
-    return value[:size].rstrip() + "..."
-
-
-async def _has_episodes(anime_id: str) -> bool:
-    if not anime_id:
-        return False
-    async def factory():
-        try:
-            payload = await get_episodes(anime_id, 0, 2)
-            items = _normalize_episodes(payload.get("all_items") or payload.get("items") or [])
-            return bool(items)
-        except Exception:
-            return False
-    return await _cached(f"haseps:{anime_id}", 300, factory)
-
-
-async def _filter_items_with_episodes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not items:
-        return []
-    checks = await asyncio.gather(*[_has_episodes(item.get("id") or item.get("anime_id") or "") for item in items], return_exceptions=True)
-    filtered = []
-    for item, ok in zip(items, checks):
-        if ok is True:
-            filtered.append(item)
-    return filtered
-
-
-async def _enrich_search_item(item: dict[str, Any]) -> dict[str, Any] | None:
-    anime_id = item.get("id") or ""
-    if not anime_id:
-        return None
-    try:
-        details = await get_anime_details(anime_id)
-    except Exception:
-        details = None
-    shaped = _shape_details(details or item, anime_id)
-    if not await _has_episodes(anime_id):
-        return None
-    return shaped
-
-
-async def _build_search_candidates() -> list[dict[str, Any]]:
-    section_ids: set[str] = set()
-    seed_items: list[dict[str, Any]] = []
-    for section in ("em_lancamento", "top", "dublados", "legendados", "acao", "aventura", "fantasia", "romance"):
-        try:
-            page = await _get_paginated_section_page(section, 1)
-        except Exception:
-            continue
-        for item in page.get("items") or []:
-            anime_id = item.get("id") or ""
-            if anime_id and anime_id not in section_ids:
-                section_ids.add(anime_id)
-                seed_items.append(item)
-    return seed_items
-
-
-async def _build_featured_payload() -> dict[str, Any] | None:
-    async def factory():
-        candidates = []
-        for section in ("em_lancamento", "top", "recentes"):
-            try:
-                page = await _get_paginated_section_page(section, 1)
-                candidates.extend(page.get("items") or [])
-            except Exception:
-                continue
-
-        seen: set[str] = set()
-        for candidate in candidates:
-            anime_id = candidate.get("id")
-            if not anime_id or anime_id in seen:
-                continue
-            seen.add(anime_id)
-            try:
-                details = await get_anime_details(anime_id)
-                if not details:
-                    continue
-                shaped = _shape_details(details, anime_id)
-                episodes_payload = await get_episodes(anime_id, 0, 60)
-                episodes = _normalize_episodes(episodes_payload.get("all_items") or episodes_payload.get("items") or [])
-                if not episodes:
-                    continue
-                return {
-                    **shaped,
-                    "description_short": _truncate_description(shaped.get("description") or candidate.get("description") or ""),
-                    "first_episode": episodes[0].get("number") or "1",
-                }
-            except Exception:
-                continue
-        return None
-
-    return await _cached("home:featured", HERO_TTL, factory)
-
-
-# =============================================================================
-# PAGINATION / CATALOG
-# =============================================================================
-
-async def _get_recent_page(page: int) -> dict:
-    async def factory():
-        recent = await get_recent_episodes(limit=200)
-        items = []
-
-        for item in recent:
-            anime_id = item.get("anime_id")
-            episode = str(item.get("episode") or "").strip()
-            if not anime_id or not episode:
-                continue
-
-            title = item.get("title") or anime_id.replace("-", " ").title()
-            dubbed = _is_dubbed(anime_id, title)
-            cover = (
-                item.get("thumb")
-                or item.get("image")
-                or item.get("cover")
-                or item.get("cover_url")
-                or ""
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": int(user_id),
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
             )
-
-            if not cover:
-                try:
-                    details = await get_anime_details(anime_id)
-                    cover = (
-                        details.get("cover_url")
-                        or details.get("media_image_url")
-                        or details.get("banner_url")
-                        or ""
-                    )
-                except Exception:
-                    cover = ""
-
-            items.append({
-                "id": f"{anime_id}__ep__{episode}",
-                "anime_id": anime_id,
-                "title": title,
-                "display_title": f"[{'DUB' if dubbed else 'LEG'}] {title}",
-                "prefix": "DUB" if dubbed else "LEG",
-                "is_dubbed": dubbed,
-                "cover_url": cover,
-                "banner_url": cover,
-                "episode": episode,
-                "description": "",
-                "genres": [],
-                "score": None,
-                "status": "",
-                "episodes": None,
-                "year": None,
-                "studio": "",
-                "open_mode": "episode",
-            })
-
-        total = len(items)
-        total_pages = max(1, (total + GRID_PAGE_LIMIT - 1) // GRID_PAGE_LIMIT) if total else 1
-        current_page = min(max(1, page), total_pages)
-        start = (current_page - 1) * GRID_PAGE_LIMIT
-        end = start + GRID_PAGE_LIMIT
-
-        return {
-            "section": "recentes",
-            "title": _section_conf("recentes")["title"],
-            "page": current_page,
-            "limit": GRID_PAGE_LIMIT,
-            "total_items": total,
-            "total_pages": total_pages,
-            "has_next": current_page < total_pages,
-            "has_prev": current_page > 1,
-            "items": items[start:end],
-        }
-
-    return await _cached(f"recentes:{page}", RECENT_TTL, factory)
-
-
-async def _get_paginated_section_page(section: str, page: int) -> dict:
-    conf = _section_conf(section)
-    if not conf:
-        return {
-            "section": section,
-            "title": section.replace("_", " ").title(),
-            "page": page,
-            "limit": GRID_PAGE_LIMIT,
-            "total_items": 0,
-            "total_pages": 0,
-            "has_next": False,
-            "has_prev": page > 1,
-            "items": [],
-        }
-
-    if conf.get("kind") == "recent":
-        return await _get_recent_page(page)
-
-    slug = conf["slug"]
-
-    if _is_sushi_source():
-        async def sushi_factory():
-            page_html = await _get(BASE_URL)
-            raw_items = _extract_listing_cards(page_html)
-            items = await _enrich_sushi_home_cards(raw_items, section)
-
-            if section == "em_lancamento":
-                items = sorted(items, key=lambda item: item.get("title") or "")
-            elif section == "top":
-                items = sorted(
-                    items,
-                    key=_score_value,
-                    reverse=True,
-                )
-
-            total = len(items)
-            total_pages = max(1, (total + GRID_PAGE_LIMIT - 1) // GRID_PAGE_LIMIT) if total else 1
-            current_page = min(max(1, page), total_pages)
-            start = (current_page - 1) * GRID_PAGE_LIMIT
-            end = start + GRID_PAGE_LIMIT
-            return {
-                "section": section,
-                "title": conf["title"],
-                "page": current_page,
-                "limit": GRID_PAGE_LIMIT,
-                "total_items": total,
-                "total_pages": total_pages,
-                "has_next": current_page < total_pages,
-                "has_prev": current_page > 1,
-                "items": items[start:end],
-            }
-
-        return await _cached(f"sushi-page:{section}:{page}", SECTION_TTL, sushi_factory)
-
-    async def meta_factory():
-        first_html = await _get(_section_url(slug, 1))
-        total_pages = _extract_last_page(first_html, slug)
-        return {"first_html": first_html, "total_pages": total_pages}
-
-    meta = await _cached(f"meta:{section}", SECTION_TTL, meta_factory)
-    total_pages = max(1, int(meta["total_pages"]))
-    current_page = min(max(1, page), total_pages)
-
-    async def page_factory():
-        if current_page == 1:
-            page_html = meta["first_html"]
-        else:
-            page_html = await _get(_section_url(slug, current_page))
-
-        raw_items = _extract_listing_cards(page_html)
-        items = await _filter_items_with_episodes(raw_items)
-
-        if section == "em_lancamento":
-            enriched = []
-            for item in items:
-                anime_id = item.get("id") or ""
-                latest = 0
-                try:
-                    payload = await get_episodes(anime_id, 0, MAX_EPISODES_FETCH)
-                    episodes = _normalize_episodes(payload.get("all_items") or payload.get("items") or [])
-                    if episodes:
-                        latest = int(_parse_episode_number(episodes[-1].get("number")) or 0)
-                        item["episodes"] = len(episodes)
-                        item["latest_episode"] = latest
-                except Exception:
-                    item["latest_episode"] = latest
-                enriched.append(item)
-            items = sorted(enriched, key=lambda x: (-(x.get("latest_episode") or 0), x.get("title") or ""))
-
-        return {
-            "section": section,
-            "title": conf["title"],
-            "page": current_page,
-            "limit": GRID_PAGE_LIMIT,
-            "total_items": len(items) if current_page == 1 else total_pages * GRID_PAGE_LIMIT,
-            "total_pages": total_pages,
-            "has_next": current_page < total_pages,
-            "has_prev": current_page > 1,
-            "items": items[:GRID_PAGE_LIMIT],
-        }
-
-    return await _cached(f"page:{section}:{current_page}", 30 if section == "em_lancamento" else SECTION_TTL, page_factory)
-
-
-# =============================================================================
-# BACKGROUND
-# =============================================================================
-
-@app.on_event("startup")
-async def _startup_tasks():
-    # Pre-create the proxy client on startup so the first request is instant.
-    init_subscriptions_db()
-    init_affiliate_db()
-    await get_proxy_client()
-
-    async def _recent_refresher():
-        while True:
-            try:
-                _invalidate_prefix("recentes:")
-                _invalidate_prefix("page:recentes")
-                _invalidate_prefix("page:em_lancamento")
-                _invalidate_prefix("meta:em_lancamento")
-                _emit_event("catalog_refresh", "recentes")
-            except Exception:
-                pass
-            await asyncio.sleep(60)
-
-    asyncio.create_task(_recent_refresher())
-
-
-@app.on_event("shutdown")
-async def _shutdown_tasks():
-    global _PROXY_CLIENT
-    if _PROXY_CLIENT and not _PROXY_CLIENT.is_closed:
-        await _PROXY_CLIENT.aclose()
-        _PROXY_CLIENT = None
-
-
-# =============================================================================
-# ROOT / HEALTH
-# =============================================================================
-
-@app.get("/")
-def root():
-    return {
-        "ok": True,
-        "name": "QG BALTIGO API",
-        "version": "4.0.0",
-        "sections": list(SECTIONS.keys()),
-    }
-
-
-@app.get("/api/health")
-def health():
-    return {
-        "ok": True,
-        "cache_entries": len(_CACHE),
-        "timestamp": int(time.time()),
-    }
-
-
-# =============================================================================
-# CATALOG
-# =============================================================================
-
-@app.get("/api/catalog/home")
-async def catalog_home():
-    ordered_sections = [
-        "recentes",
-        "em_lancamento",
-        "atualizados",
-        "top",
-        "legendados",
-        "dublados",
-        "acao",
-        "aventura",
-        "comedia",
-    ]
-
-    tasks = [_get_paginated_section_page(section, 1) for section in ordered_sections]
-    featured_task = _build_featured_payload()
-    results = await asyncio.gather(*tasks, featured_task, return_exceptions=True)
-    featured_result = results[-1]
-    section_results = results[:-1]
-
-    payload = []
-    for section, result in zip(ordered_sections, section_results):
-        conf = _section_conf(section)
-        title = conf["title"] if conf else section
-        if isinstance(result, Exception):
-            payload.append({"key": section, "title": title, "page": 1, "total_pages": 0, "items": []})
-        else:
-            payload.append({
-                "key": section,
-                "title": result["title"],
-                "page": 1,
-                "total_pages": result["total_pages"],
-                "items": [item for item in result["items"][:HOME_SECTION_LIMIT] if _has_minimum_catalog_fields(item)],
-            })
-
-    featured = None if isinstance(featured_result, Exception) else featured_result
-    return {"ok": True, "featured": featured, "sections": payload}
-
-
-@app.get("/api/catalog/list")
-async def catalog_list(
-    section: str = Query("dublados"),
-    page: int = Query(1, ge=1),
-):
-    data = await _get_paginated_section_page(section, page)
-    data["items"] = [item for item in data["items"] if _has_minimum_catalog_fields(item)]
-    return {"ok": bool(data["items"]), **data}
-
-
-# =============================================================================
-# SEARCH
-# =============================================================================
-
-@app.get("/api/search")
-async def api_search(
-    q: str = Query(..., min_length=1),
-    page: int = Query(1, ge=1),
-    limit: int = Query(GRID_PAGE_LIMIT, ge=1, le=60),
-):
-    query = q.strip()
-    normalized_query = _normalize_text(query)
-
-    async def factory():
-        upstream: list[dict[str, Any]] = []
-        try:
-            upstream = await search_anime(query)
-        except Exception:
-            upstream = []
-
-        seeds = await _build_search_candidates()
-        merged: dict[str, dict[str, Any]] = {}
-        for item in upstream + seeds:
-            anime_id = item.get("id") or item.get("default_anime_id") or ""
-            if anime_id and anime_id not in merged:
-                merged[anime_id] = {"id": anime_id, **item}
-
-        enriched = await asyncio.gather(*[_enrich_search_item(item) for item in merged.values()], return_exceptions=True)
-        results = []
-        titles_for_suggestions = []
-        for item in enriched:
-            if not item or isinstance(item, Exception):
-                continue
-            titles_for_suggestions.append(item.get("title") or "")
-            title_score = _score_text_match(query, item.get("title") or "", *(item.get("alt_titles") or []))
-            tag_score = _score_text_match(query, *(item.get("genres") or []))
-            score = max(title_score, tag_score + 15 if tag_score else 0)
-            if score <= 0:
-                continue
-            item["_score"] = score
-            results.append(item)
-
-        results.sort(key=lambda item: (-item.get("_score", 0), item.get("title") or ""))
-        suggestions = _suggestions(query, titles_for_suggestions)
-        cleaned = []
-        for item in results:
-            item.pop("_score", None)
-            cleaned.append(item)
-        return {"items": cleaned, "suggestions": suggestions}
-
-    payload = await _cached(f"search:v2:{normalized_query}", SEARCH_TTL, factory)
-    shaped = payload.get("items") or []
-    suggestions = payload.get("suggestions") or []
-
-    total = len(shaped)
-    total_pages = max(1, (total + limit - 1) // limit) if total else 0
-    current_page = min(page, total_pages) if total_pages else 1
-    start = (current_page - 1) * limit
-    end = start + limit
-
-    return {
-        "ok": True,
-        "query": query,
-        "items": shaped[start:end],
-        "count": total,
-        "page": current_page,
-        "limit": limit,
-        "total_pages": total_pages,
-        "has_next": current_page < total_pages if total_pages else False,
-        "has_prev": current_page > 1,
-        "suggestions": suggestions,
-    }
-
-
-# =============================================================================
-# ANIME / EPISODES
-# =============================================================================
-
-@app.get("/api/anime/{anime_id}")
-async def api_anime(anime_id: str):
-    async def factory():
-        data = await get_anime_details(anime_id)
-        if not data:
-            return None
-
-        episodes_payload = await get_episodes(anime_id, 0, MAX_EPISODES_FETCH)
-        episodes = _normalize_episodes(episodes_payload.get("all_items") or episodes_payload.get("items") or [])
-        item = _shape_details(data, anime_id)
-        if episodes:
-            item["episodes"] = len(episodes)
-        return {"item": item, "episodes": episodes}
-
-    payload = await _cached(f"anime:{anime_id}", ANIME_TTL, factory)
-    if not payload:
-        raise HTTPException(status_code=404, detail="Anime não encontrado")
-
-    return {"ok": True, **payload}
-
-
-@app.get("/api/anime/{anime_id}/episode/{episode}")
-async def api_episode(
-    anime_id: str,
-    episode: str,
-    quality: str = Query("HD"),
-    refresh: int = Query(0, description="Passe 1 para ignorar cache e buscar link novo"),
-):
-    quality = (quality or "HD").upper()
-    cache_key = f"episode:{anime_id}:{episode}:{quality}"
-
-    # Allow the frontend to force a fresh link fetch when the cached one has expired.
-    if refresh:
-        _invalidate_key(cache_key)
-        invalidate_episode_caches(anime_id, episode)
-
-    async def factory():
-        item = await get_episode_player(anime_id, episode, quality)
-        if not item:
-            return None
-
-        payload = _shape_episode_payload(anime_id, episode, quality, item)
-
-        # Automatic HD → SD fallback when the primary quality has no video.
-        if not payload.get("video"):
-            fallback_quality = "SD" if quality == "HD" else "HD"
-            try:
-                fallback_item = await get_episode_player(anime_id, episode, fallback_quality)
-                if fallback_item:
-                    fallback_payload = _shape_episode_payload(
-                        anime_id,
-                        episode,
-                        fallback_quality,
-                        fallback_item,
-                    )
-                    if fallback_payload.get("video"):
-                        return fallback_payload
-            except Exception:
-                pass
-
-        return payload
-
-    payload = await _cached(cache_key, EPISODE_TTL, factory)
-    if not payload:
-        raise HTTPException(status_code=404, detail="Episódio não encontrado")
-
-    return {"ok": True, "item": payload}
-
-
-@app.get("/api/episode/{episode_id}")
-async def api_episode_direct(
-    episode_id: str,
-    quality: str = Query("HD"),
-    refresh: int = Query(0),
-):
-    raw = (episode_id or "").strip().strip("/")
-    match = re.match(r"^(?P<anime>.+?)-ep-(?P<ep>\d+(?:[.,]\d+)?)$", raw)
-    if not match:
-        raise HTTPException(status_code=400, detail="Formato inválido. Use anime-slug-ep-12")
-    return await api_episode(match.group("anime"), match.group("ep"), quality=quality, refresh=refresh)
-
-
-@app.get("/api/events")
-async def api_events(request: Request):
-    async def event_stream():
-        last_sent = -1
-        while True:
-            if await request.is_disconnected():
-                break
-            event = _EVENT_STATE.get("last") or {}
-            event_id = int(event.get("id") or 0)
-            if event_id != last_sent:
-                payload = json.dumps(event, ensure_ascii=False)
-                yield f"id: {event_id}\nevent: catalog\ndata: {payload}\n\n"
-                last_sent = event_id
-            await asyncio.sleep(2)
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
-
-
-@app.post("/api/cache/invalidate")
-async def invalidate_runtime(scope: str = Query("all")):
-    _invalidate_prefix("recentes:")
-    _invalidate_prefix("page:recentes")
-    _invalidate_prefix("page:em_lancamento")
-    _invalidate_prefix("meta:em_lancamento")
-    _invalidate_prefix("home:")
-    _emit_event("manual_invalidate", scope)
-    return {"ok": True, "scope": scope}
-
-
-# =============================================================================
-# OFFLINE SUBSCRIPTIONS / CAKTO
-# =============================================================================
-
-@app.get("/api/offline/subscription")
-async def api_offline_subscription(user_id: int = Query(...)):
-    sub = get_active_subscription(int(user_id))
-    return {"ok": True, "active": bool(sub), "subscription": sub}
-
-
-@app.post("/api/cakto/offline-webhook")
-async def api_cakto_offline_webhook(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="JSON invalido")
-
-    try:
-        webhook_log = BASE_DIR / "data" / "cakto_offline_webhook.log"
-        webhook_log.parent.mkdir(parents=True, exist_ok=True)
-        with webhook_log.open("a", encoding="utf-8") as fp:
-            fp.write(json.dumps({"ts": int(time.time()), "payload": payload}, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
-    received_secrets = [
-        request.headers.get("x-webhook-secret"),
-        request.headers.get("x-cakto-secret"),
-        request.headers.get("x-cakto-signature"),
-        request.headers.get("x-cakto-token"),
-        *extract_webhook_secret_values(payload),
-    ]
-    if CAKTO_WEBHOOK_SECRET and CAKTO_WEBHOOK_SECRET not in {str(item or "").strip() for item in received_secrets}:
-        raise HTTPException(status_code=401, detail="Webhook nao autorizado")
+
+async def _notify_cakto_user(result: dict[str, Any]) -> None:
+    if not CAKTO_NOTIFY_USERS or not BOT_TOKEN:
+        return
+
+    access = result.get("access") or {}
+    if access.get("duplicate_event"):
+        return
+
+    user_id = result.get("user_id")
+    if not user_id:
+        return
+
+    action = result.get("action")
+    if action == "granted":
+        text = offline_welcome_message(access or result, source="payment")
+    elif action == "revoked":
+        text = (
+            "🔒 <b>Leitura offline bloqueada</b>\n\n"
+            "Recebemos um aviso de cancelamento, reembolso ou chargeback dessa assinatura.\n\n"
+            "Se você acredita que isso foi um engano, fale com o suporte."
+        )
+    else:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": int(user_id),
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+    except Exception:
+        pass
+
+
+def _log_cakto_webhook_payload(payload: dict[str, Any], result: dict[str, Any] | None = None) -> None:
+    path = Path(DATA_DIR) / "cakto_webhooks.jsonl"
+    redacted_payload = dict(payload)
+    for key in list(redacted_payload.keys()):
+        if any(token in str(key).lower() for token in ("secret", "token", "password", "pix", "document")):
+            redacted_payload[key] = "[redacted]"
+    record = {
+        "received_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+        "result": result or {},
+        "payload": redacted_payload,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
+
+@app.post("/api/webhooks/cakto")
+async def api_cakto_webhook(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="JSON inválido.") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload do webhook precisa ser JSON object.")
+
+    if not _cakto_secret_is_valid(request, payload):
+        _log_cakto_webhook_payload(payload, {"action": "unauthorized"})
+        raise HTTPException(status_code=401, detail="Webhook Cakto não autorizado.")
 
     result = process_cakto_webhook(payload)
+    _log_cakto_webhook_payload(payload, result)
+    if result.get("action") in {"granted", "revoked"}:
+        asyncio.create_task(_notify_cakto_user(result))
+
     return result
 
-
-# =============================================================================
-# AFFILIATE WEBAPP / GATEWAY
-# =============================================================================
 
 @app.get("/affiliate")
 async def affiliate_root():
@@ -1326,34 +1008,54 @@ async def affiliate_root_slash():
     return FileResponse(AFFILIATE_APP_DIR / "index.html")
 
 
+@app.get("/app/affiliate")
+async def affiliate_app_alias():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
+@app.get("/app/affiliate/")
+async def affiliate_app_alias_slash():
+    return FileResponse(AFFILIATE_APP_DIR / "index.html")
+
+
 @app.get("/affiliate/share/{user_id}")
 async def affiliate_share_preview(user_id: int):
-    ref_url = f"https://t.me/{BOT_USERNAME.lstrip('@')}?start=ref_{int(user_id)}"
-    image_url = STICKER_DIVISOR if str(STICKER_DIVISOR or "").startswith("http") else ""
-    if not image_url:
-        image_url = "https://photo.chelpbot.me/AgACAgEAAxkBZ7DGAAFpse3x62wh4yTxu0BIhIPz12L_YwACMAxrGxpikUXp6-kJkxw_1QEAAwIAA3kAAzoE/photo.jpg"
+    bot_username = BOT_USERNAME or "MangasBaltigo_Bot"
+    ref_url = f"https://t.me/{bot_username}?start=ref_{int(user_id)}"
+    image_url = (
+        "https://photo.chelpbot.me/AgACAgEAAxkBZ7DGAAFpse3x62wh4yTxu0BIhIPz12L_YwACMAxrGxpikUXp6-kJkxw_1QEAAwIAA3kAAzoE/photo.jpg"
+    )
     html_body = f"""<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Baltigo - Animes Offline no Telegram</title>
-  <meta property="og:title" content="Baltigo - Animes offline direto no Telegram">
-  <meta property="og:description" content="Assista animes, baixe episódios e veja offline pelo bot Baltigo.">
+  <title>Baltigo - Mangas no Telegram</title>
+  <meta property="og:title" content="Baltigo - Mangas direto no Telegram">
+  <meta property="og:description" content="Leia mangas, acompanhe capitulos e libere recursos offline pelo bot Baltigo.">
   <meta property="og:image" content="{image_url}">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
   <meta http-equiv="refresh" content="0; url={ref_url}">
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#080b12; color:#fff; font-family:system-ui,sans-serif; }}
+    a {{ color:#93c5fd; }}
+  </style>
 </head>
-<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#080b12;color:#fff;font-family:system-ui,sans-serif">
-  <main><h1>Baltigo Animes</h1><p>Redirecionando para o bot...</p><a style="color:#93c5fd" href="{ref_url}">Abrir agora</a></main>
+<body>
+  <main>
+    <h1>Baltigo</h1>
+    <p>Redirecionando para o bot...</p>
+    <a href="{ref_url}">Abrir agora</a>
+  </main>
 </body>
 </html>"""
     return Response(content=html_body, media_type="text/html")
 
 
 @app.get("/api/affiliate/summary")
-async def api_affiliate_summary(user_id: str = Query(...)):
+async def api_affiliate_summary(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
     summary = affiliate_summary(user_id)
     summary["available_formatted"] = cents_to_money(summary.get("available_cents"))
     summary["pending_formatted"] = cents_to_money(summary.get("pending_cents"))
@@ -1365,73 +1067,77 @@ async def api_affiliate_summary(user_id: str = Query(...)):
 
 
 @app.get("/api/affiliate/commissions")
-async def api_affiliate_commissions(user_id: str = Query(...), limit: int = Query(60, ge=1, le=200)):
+async def api_affiliate_commissions(request: Request, user_id: str = Query(""), limit: int = Query(60, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
     return {"items": [_money_fields(item) for item in list_commissions(user_id, limit=limit)]}
 
 
 @app.get("/api/affiliate/withdrawals")
-async def api_affiliate_withdrawals(user_id: str = Query(...), limit: int = Query(40, ge=1, le=200)):
+async def api_affiliate_withdrawals(request: Request, user_id: str = Query(""), limit: int = Query(40, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
     return {"items": [_money_fields(item) for item in list_withdrawals(user_id, limit=limit)]}
 
 
+@app.post("/api/affiliate/pix")
+async def api_affiliate_pix(request: Request, payload: AffiliatePixPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    return {"ok": True, "profile": set_pix_key(user_id, payload.pix_key)}
+
+
 @app.post("/api/affiliate/account")
-async def api_affiliate_account(payload: AffiliateAccountPayload):
+async def api_affiliate_account(request: Request, payload: AffiliateAccountPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     try:
-        profile = complete_affiliate_account(payload.user_id, payload.full_name, payload.email, payload.phone)
+        profile = complete_affiliate_account(user_id, payload.full_name, payload.email, payload.phone)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "profile": profile}
 
 
-@app.post("/api/affiliate/pix")
-async def api_affiliate_pix(payload: AffiliatePixPayload):
-    try:
-        return {"ok": True, "profile": set_pix_key(payload.user_id, payload.pix_key)}
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-
 @app.post("/api/affiliate/withdrawals")
-async def api_affiliate_request_withdrawal(payload: AffiliateUserPayload):
+async def api_affiliate_request_withdrawal(request: Request, payload: AffiliateUserPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
     try:
-        withdrawal = request_withdrawal(payload.user_id)
+        withdrawal = request_withdrawal(user_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "withdrawal": _money_fields(withdrawal)}
 
 
 @app.post("/api/affiliate/release")
-async def api_affiliate_release(payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_release(request: Request, payload: AffiliateAdminActionPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     return {"ok": True, "released": release_due_commissions()}
 
 
 @app.get("/api/affiliate/admin/overview")
-async def api_affiliate_admin_overview(admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_admin_overview(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return admin_overview()
 
 
 @app.get("/api/affiliate/admin/withdrawals")
 async def api_affiliate_admin_withdrawals(
-    admin_user_id: str = Query(...),
+    request: Request,
+    admin_user_id: str = Query(""),
     status: str = Query("pending"),
     limit: int = Query(100, ge=1, le=300),
 ):
-    _admin_required(admin_user_id)
+    _authenticated_admin_id(request, admin_user_id)
     return {"items": [_money_fields(item) for item in admin_list_withdrawals(status=status, limit=limit)]}
 
 
 @app.get("/api/affiliate/admin/affiliates")
 async def api_affiliate_admin_affiliates(
-    admin_user_id: str = Query(...),
+    request: Request,
+    admin_user_id: str = Query(""),
     q: str = Query(""),
     tier: str = Query("all"),
     status: str = Query("all"),
     sort: str = Query("sales"),
     limit: int = Query(200, ge=1, le=500),
 ):
-    _admin_required(admin_user_id)
+    _authenticated_admin_id(request, admin_user_id)
     return {
         "items": [
             _money_fields(item)
@@ -1441,24 +1147,24 @@ async def api_affiliate_admin_affiliates(
 
 
 @app.get("/api/affiliate/admin/user/{user_id}")
-async def api_affiliate_admin_user(user_id: str, admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_admin_user(request: Request, user_id: str, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return admin_user_snapshot(user_id)
 
 
 @app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/pay")
-async def api_affiliate_admin_pay_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_admin_pay_withdrawal(request: Request, withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    admin_id = _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
-        withdrawal = pay_withdrawal(withdrawal_id, payload.admin_user_id)
+        withdrawal = pay_withdrawal(withdrawal_id, admin_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {"ok": True, "withdrawal": _money_fields(withdrawal)}
 
 
 @app.post("/api/affiliate/admin/withdrawals/{withdrawal_id}/refuse")
-async def api_affiliate_admin_refuse_withdrawal(withdrawal_id: int, payload: AffiliateAdminActionPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_admin_refuse_withdrawal(request: Request, withdrawal_id: int, payload: AffiliateAdminActionPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
         withdrawal = refuse_withdrawal(withdrawal_id, payload.note)
     except ValueError as error:
@@ -1467,14 +1173,14 @@ async def api_affiliate_admin_refuse_withdrawal(withdrawal_id: int, payload: Aff
 
 
 @app.get("/api/affiliate/settings")
-async def api_affiliate_settings(admin_user_id: str = Query(...)):
-    _admin_required(admin_user_id)
+async def api_affiliate_settings(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
     return {"settings": get_settings()}
 
 
 @app.post("/api/affiliate/settings")
-async def api_affiliate_update_setting(payload: AffiliateSettingPayload):
-    _admin_required(payload.admin_user_id)
+async def api_affiliate_update_setting(request: Request, payload: AffiliateSettingPayload):
+    _authenticated_admin_id(request, payload.admin_user_id, payload.init_data)
     try:
         update_setting(payload.key, payload.value)
     except ValueError as error:
@@ -1482,242 +1188,335 @@ async def api_affiliate_update_setting(payload: AffiliateSettingPayload):
     return {"ok": True, "settings": get_settings()}
 
 
-# =============================================================================
-# PROGRESS
-# =============================================================================
+@app.get("/api/home")
+async def api_home(limit: int = Query(HOME_SECTION_LIMIT, ge=4, le=24)):
+    return await _home_payload(limit=limit)
 
-@app.post("/api/progress")
-async def save_progress(payload: ProgressPayload):
-    user_id = _clean(payload.user_id) or "guest"
-    anime_id = _clean(payload.anime_id)
-    episode = _clean(payload.episode)
-    if not anime_id or not episode:
-        raise HTTPException(status_code=400, detail="anime_id e episode são obrigatórios")
 
-    bucket = _PROGRESS.setdefault(user_id, {})
-    bucket[anime_id] = {
-        "anime_id": anime_id,
-        "episode": episode,
-        "watched_seconds": max(0, int(payload.watched_seconds or 0)),
-        "duration_seconds": max(0, int(payload.duration_seconds or 0)),
-        "title": _clean(payload.title),
-        "cover_url": payload.cover_url or "",
-        "completed": bool(payload.completed),
-        "updated_at": int(time.time()),
+@app.get("/api/search")
+async def api_search(q: str = Query("", min_length=1), limit: int = Query(12, ge=1, le=24)):
+    return await _search_with_suggestions(q, limit)
+
+
+@app.get("/api/sections/{section_name}")
+async def api_section(section_name: str, limit: int = Query(12, ge=1, le=24)):
+    async def producer() -> dict[str, Any]:
+        if section_name == "recent_chapters":
+            items = await get_recent_chapters(limit=max(limit, 12))
+            clean = [_public_title_item(item) for item in items if _has_real_chapter(item)]
+            clean.sort(
+                key=lambda item: (
+                    item.get("updated_at") or "",
+                    item.get("chapter_number") or item.get("latest_chapter") or "",
+                ),
+                reverse=True,
+            )
+            return {"items": clean[:limit]}
+
+        section_map = {
+            "featured": "getFeatured",
+            "popular": "getPopular",
+            "recent_titles": "getRecentRead",
+            "latest_titles": "getLatestTable",
+        }
+        search_type = section_map.get(section_name)
+        if not search_type:
+            raise HTTPException(status_code=404, detail="Seção não encontrada.")
+
+        extra = {"search_time": "week"} if search_type == "getRecentRead" else {}
+        items = await get_title_search(search_type, limit=max(limit, 16), **extra)
+        clean = [_public_title_item(item) for item in items if _has_real_chapter(item)]
+        if section_name in {"latest_titles", "recent_titles"}:
+            clean.sort(
+                key=lambda item: (item.get("updated_at") or "", item.get("latest_chapter") or ""),
+                reverse=True,
+            )
+        return {"items": clean[:limit]}
+
+    return await _stale_while_revalidate(
+        "section",
+        _SECTIONS_TTL,
+        _SECTIONS_TTL * 3,
+        producer,
+        section_name=section_name,
+        limit=limit,
+    )
+
+
+@app.get("/api/title/{title_id}")
+async def api_title(request: Request, title_id: str, user_id: str = Query(""), lang: str = Query("")):
+    try:
+        safe_user_id = ""
+        if user_id or _request_init_data(request):
+            safe_user_id = _authenticated_user_id(request, user_id)
+        resolved_lang = normalize_language(lang) or get_user_language(safe_user_id, PREFERRED_CHAPTER_LANG)
+        return await _title_payload(title_id, resolved_lang, safe_user_id)
+    except Exception as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/title/{title_id}/chapters")
+async def api_title_chapters(title_id: str, lang: str = Query(PREFERRED_CHAPTER_LANG)):
+    try:
+        resolved_lang = normalize_language(lang) or PREFERRED_CHAPTER_LANG
+        bundle = await _title_payload(title_id, resolved_lang)
+        return {
+            "title_id": bundle["title_id"],
+            "title": bundle.get("title") or "",
+            "chapters": bundle.get("chapters") or [],
+            "language_options": bundle.get("language_options") or [],
+            "current_language": bundle.get("current_language") or resolved_lang,
+        }
+    except Exception as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/chapter/{chapter_id}")
+async def api_chapter(request: Request, chapter_id: str, user_id: str = Query(""), lang: str = Query("")):
+    try:
+        safe_user_id = ""
+        if user_id or _request_init_data(request):
+            safe_user_id = _authenticated_user_id(request, user_id)
+        resolved_lang = normalize_language(lang) or get_user_language(safe_user_id, PREFERRED_CHAPTER_LANG)
+        return await _chapter_payload(chapter_id, resolved_lang)
+    except Exception as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/preferences")
+async def api_get_preferences(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
+    lang = get_user_language(user_id, PREFERRED_CHAPTER_LANG)
+    return {
+        "chapter_language": lang,
+        "language_options": language_options([lang]),
     }
-    return {"ok": True, "item": bucket[anime_id]}
+
+
+@app.post("/api/preferences")
+async def api_save_preferences(request: Request, payload: PreferencesPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    preference = set_user_language(user_id, payload.chapter_language)
+    await _invalidate_prefix("cache")
+    return {"ok": True, "preferences": preference}
 
 
 @app.get("/api/progress")
-async def get_progress(user_id: str = Query("guest")):
-    items = list((_PROGRESS.get(_clean(user_id) or "guest") or {}).values())
-    items.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
-    return {"ok": True, "items": items}
+async def api_get_progress(request: Request, user_id: str = Query(""), title_id: str = Query(...)):
+    user_id = _authenticated_user_id(request, user_id)
+    data = _load_progress()
+    return _public_last_read(data.get(_progress_key(user_id, title_id))) or {}
 
 
-# =============================================================================
-# CACHE
-# =============================================================================
+@app.get("/api/history")
+async def api_get_history(request: Request, user_id: str = Query(""), limit: int = Query(80, ge=1, le=200)):
+    user_id = _authenticated_user_id(request, user_id)
+    progress_data = _load_progress()
+    items = get_recently_read(user_id, limit=limit)
+    return {
+        "items": [
+            _public_history_item(user_id, item, progress_data)
+            for item in items
+            if item.get("title_id") and item.get("chapter_id")
+        ]
+    }
 
-@app.post("/api/cache/clear")
-async def clear_cache(
-    prefix: str = Query("", description="Prefixo das chaves a limpar; vazio = tudo")
-):
-    if prefix:
-        _invalidate_prefix(prefix)
-        cleared = f"prefix:{prefix}"
+
+@app.post("/api/progress")
+async def api_save_progress(request: Request, payload: ProgressPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    data = _load_progress()
+    key = _progress_key(user_id, payload.title_id)
+    stored = payload.model_dump()
+    if not stored.get("updated_at"):
+        stored["updated_at"] = int(time.time() * 1000)
+    data[key] = stored
+    _save_progress(data)
+
+    mark_chapter_read(
+        user_id=user_id,
+        title_id=payload.title_id,
+        chapter_id=payload.chapter_id,
+        chapter_number=payload.chapter_number,
+        title_name=payload.title_name,
+        chapter_url=payload.chapter_url,
+    )
+
+    await _invalidate_prefix("cache")
+    return {"ok": True}
+
+
+@app.post("/api/progress/sync")
+async def api_sync_progress(request: Request, payload: ProgressSyncPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    data = _load_progress()
+    now_ms = int(time.time() * 1000)
+
+    for raw_item in (payload.progress or [])[:200]:
+        if not isinstance(raw_item, dict):
+            continue
+
+        title_id = str(raw_item.get("title_id") or "").strip()
+        chapter_id = str(raw_item.get("chapter_id") or "").strip()
+        if not title_id or not chapter_id:
+            continue
+
+        key = _progress_key(user_id, title_id)
+        current = data.get(key) or {}
+        incoming_updated = _public_updated_at_ms(raw_item.get("updated_at") or now_ms)
+        current_updated = _public_updated_at_ms(current.get("updated_at")) if current else 0
+        if current and incoming_updated < current_updated:
+            continue
+
+        record = {
+            "user_id": user_id,
+            "title_id": title_id,
+            "title_name": str(raw_item.get("title_name") or raw_item.get("title") or "").strip(),
+            "chapter_id": chapter_id,
+            "chapter_number": str(raw_item.get("chapter_number") or "").strip(),
+            "chapter_url": str(raw_item.get("chapter_url") or "").strip(),
+            "page_index": int(raw_item.get("page_index") or 0),
+            "total_pages": int(raw_item.get("total_pages") or 0),
+            "cover_url": str(raw_item.get("cover_url") or "").strip(),
+            "updated_at": incoming_updated,
+        }
+        data[key] = {**current, **record}
+
+        try:
+            mark_chapter_read(
+                user_id=user_id,
+                title_id=title_id,
+                chapter_id=chapter_id,
+                chapter_number=record["chapter_number"],
+                title_name=record["title_name"],
+                chapter_url=record["chapter_url"],
+            )
+        except Exception:
+            pass
+
+    _save_progress(data)
+    items = get_recently_read(user_id, limit=200)
+    return {
+        "ok": True,
+        "items": [
+            _public_history_item(user_id, item, data)
+            for item in items
+            if item.get("title_id") and item.get("chapter_id")
+        ],
+    }
+
+
+@app.get("/api/favorites")
+async def api_get_favorites(request: Request, user_id: str = Query("")):
+    user_id = _authenticated_user_id(request, user_id)
+    return {"items": list_user_favorites(user_id, limit=200)}
+
+
+@app.post("/api/favorites")
+async def api_save_favorite(request: Request, payload: FavoritePayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    if not payload.favorite:
+        remove_user_favorite(user_id, payload.title_id)
+        return {"ok": True, "items": list_user_favorites(user_id, limit=200)}
+
+    favorite = payload.model_dump(exclude={"favorite", "user_id"})
+    set_user_favorite(user_id, favorite)
+    return {"ok": True, "items": list_user_favorites(user_id, limit=200)}
+
+
+@app.post("/api/favorites/sync")
+async def api_sync_favorites(request: Request, payload: FavoritesSyncPayload):
+    user_id = _authenticated_user_id(request, payload.user_id, payload.init_data)
+    return {"ok": True, "items": merge_user_favorites(user_id, payload.favorites)}
+
+
+@app.post("/api/refresh")
+async def api_refresh(request: Request, admin_user_id: str = Query("")):
+    _authenticated_admin_id(request, admin_user_id)
+    await _invalidate_prefix("cache")
+    return {"ok": True}
+
+
+@app.get("/api/media/telegraph/{asset_key}/{asset_name}")
+async def api_telegraph_media(asset_key: str, asset_name: str):
+    try:
+        asset_path = resolve_telegraph_asset_path(asset_key, asset_name)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    return FileResponse(
+        asset_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@app.get("/")
+async def root():
+    return FileResponse(MINIAPP_DIR / "index.html")
+
+
+@app.middleware("http")
+async def add_perf_headers(request: Request, call_next):
+    start = time.perf_counter()
+    if request.url.path.startswith("/api/"):
+        ip = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        ip = ip or (request.client.host if request.client else "unknown")
+        bucket = int(time.time() // 60)
+        key = f"{ip}:{bucket}"
+        async with _RATE_LIMIT_LOCK:
+            _, count = _RATE_LIMIT.get(key, (bucket, 0))
+            count += 1
+            _RATE_LIMIT[key] = (bucket, count)
+            if len(_RATE_LIMIT) > 5000:
+                current_bucket = bucket
+                for old_key, (old_bucket, _) in list(_RATE_LIMIT.items()):
+                    if old_bucket < current_bucket - 2:
+                        _RATE_LIMIT.pop(old_key, None)
+        if count > max(30, API_RATE_LIMIT_PER_MINUTE):
+            return JSONResponse(
+                {"detail": "Muitas requisicoes. Tente novamente em instantes."},
+                status_code=429,
+            )
+    no_cache_index = request.url.path in {"/", "/miniapp", "/miniapp/", "/miniapp/index.html"}
+    if no_cache_index:
+        request.scope["headers"] = [
+            (key, value)
+            for key, value in request.scope.get("headers", [])
+            if key.lower() not in {b"if-none-match", b"if-modified-since"}
+        ]
+
+    response: Response = await call_next(request)
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    response.headers["X-Response-Time"] = f"{elapsed_ms}ms"
+    if no_cache_index:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     else:
-        count = len(_CACHE)
-        _CACHE.clear()
-        cleared = f"all:{count}"
-
-    return {"ok": True, "cleared": cleared}
-
-
-# =============================================================================
-# STATIC / MINIAPP
-# =============================================================================
-
-if MINIAPP_DIR.exists():
-    app.mount("/miniapp", StaticFiles(directory=str(MINIAPP_DIR)), name="miniapp")
-
-
-@app.get("/app")
-async def app_index():
-    index_path = MINIAPP_DIR / "index.html"
-    if not index_path.exists():
-        raise HTTPException(status_code=404, detail="Frontend not found")
-    response = FileResponse(index_path)
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
+        response.headers["Cache-Control"] = response.headers.get("Cache-Control", "public, max-age=15")
     return response
 
 
-@app.get("/watch")
-async def app_watch():
-    watch_path = MINIAPP_DIR / "watch.html"
-    if not watch_path.exists():
-        raise HTTPException(status_code=404, detail="Watch page not found")
-    return FileResponse(watch_path)
-
-
-# =============================================================================
-# PROXY STREAM  (global pooled client, proper Range support, smart retry)
-# =============================================================================
-
-async def _proxy_request_with_retry(
-    method: str,
-    url: str,
-    headers: dict[str, str],
-) -> httpx.Response:
-    """
-    Performs a streaming-compatible proxy request with automatic retry.
-
-    Each attempt uses the shared global client so TCP connections are reused.
-    On 4xx/5xx the function retries with exponential back-off up to
-    PROXY_MAX_RETRIES times before raising.
-    """
-    client = await get_proxy_client()
-    last_error: Exception | None = None
-
-    for attempt in range(PROXY_MAX_RETRIES + 1):
-        try:
-            # Use stream=True so we never buffer the full response in RAM.
-            response = await client.send(
-                client.build_request(method, url, headers=headers),
-                stream=True,
-            )
-
-            if response.status_code in (200, 206):
-                return response
-
-            # Non-retryable client errors.
-            if 400 <= response.status_code < 500:
-                await response.aclose()
-                raise Exception(f"Upstream client error: {response.status_code}")
-
-            await response.aclose()
-            last_error = Exception(f"Upstream server error: {response.status_code}")
-
-        except (httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ConnectTimeout) as exc:
-            last_error = exc
-
-        except Exception as exc:
-            last_error = exc
-            # Don't retry on non-network errors.
-            if not isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
-                break
-
-        if attempt < PROXY_MAX_RETRIES:
-            await asyncio.sleep(0.3 * (attempt + 1))
-
-    raise last_error or Exception("Proxy: falha desconhecida após retries")
-
-
-@app.api_route("/api/proxy-stream", methods=["GET", "HEAD"])
-async def proxy_stream(
-    request: Request,
-    url: str = Query(..., min_length=1),
-):
-    range_header = request.headers.get("range", "")
-
-    outgoing_headers: dict[str, str] = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Accept": "*/*",
-        "Connection": "keep-alive",
-        "Referer": BASE_URL + "/",
-        "Origin": BASE_URL,
-    }
-
-    if range_header:
-        outgoing_headers["Range"] = range_header
-
-    method = "HEAD" if request.method == "HEAD" else "GET"
-
-    try:
-        upstream = await _proxy_request_with_retry(method, url, outgoing_headers)
-    except Exception as exc:
-        print(f"PROXY ERROR [{method}] {url!r}: {exc!r}")
-        raise HTTPException(status_code=502, detail="Erro ao carregar vídeo")
-
-    content_type = upstream.headers.get("content-type", "application/octet-stream")
-    if content_type.lower().startswith("application/octet-stream"):
-        hinted_type = (parse_qs(urlsplit(url).query).get("type") or [""])[0]
-        if hinted_type.startswith("video/"):
-            content_type = hinted_type
-        elif urlsplit(url).path.lower().endswith(".mp4"):
-            content_type = "video/mp4"
-
-    # Build the response headers we will forward to the browser.
-    passthrough: dict[str, str] = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-        "Access-Control-Allow-Headers": "Range, Content-Type, Accept",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
-        "Accept-Ranges": upstream.headers.get("accept-ranges", "bytes"),
-        "Content-Type": content_type,
-        # Tell browsers/proxies not to cache proxy responses; caching is done at
-        # the application layer (episode endpoint) instead.
-        "Cache-Control": "no-store",
-    }
-
-    for header in ("content-length", "content-range", "content-disposition", "etag", "last-modified"):
-        value = upstream.headers.get(header)
-        if value:
-            passthrough[header.title().replace("-", "-")] = value
-
-    if method == "HEAD":
-        await upstream.aclose()
-        return Response(content=b"", status_code=upstream.status_code, headers=passthrough)
-
-    status_code = upstream.status_code
-
-    async def byte_stream():
-        try:
-            async for chunk in upstream.aiter_bytes(PROXY_CHUNK_SIZE):
-                yield chunk
-        except (httpx.ReadTimeout, httpx.RemoteProtocolError, GeneratorExit):
-            pass
-        finally:
-            await upstream.aclose()
-
-    return StreamingResponse(
-        byte_stream(),
-        status_code=status_code,
-        headers=passthrough,
-        media_type=content_type,
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "path": str(request.url.path)},
     )
 
 
-@app.get("/api/image-proxy")
-async def image_proxy(url: str = Query(..., min_length=1)):
-    if not url.lower().startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL de imagem invÃ¡lida")
-
-    client = await get_http_client()
-    try:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": HEADERS["User-Agent"],
-                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": BASE_URL + "/",
-            },
-        )
-        response.raise_for_status()
-    except Exception as exc:
-        print(f"IMAGE PROXY ERROR {url!r}: {exc!r}")
-        raise HTTPException(status_code=502, detail="Erro ao carregar imagem")
-
-    content_type = response.headers.get("content-type", "image/jpeg")
-    if not content_type.lower().startswith("image/"):
-        content_type = "image/jpeg"
-    return Response(
-        content=response.content,
-        media_type=content_type,
-        headers={
-            "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*",
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Erro interno no miniapp.",
+            "path": str(request.url.path),
+            "error": str(exc),
         },
     )
+
+
+if MINIAPP_DIR.exists():
+    app.mount("/miniapp", StaticFiles(directory=MINIAPP_DIR, html=True), name="miniapp")
