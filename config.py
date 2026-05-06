@@ -211,3 +211,25 @@ AI_TIMEZONE = os.getenv("AI_TIMEZONE", "America/Cuiaba").strip()
 AI_QUIET_HOURS_START = _env_optional_int("AI_QUIET_HOURS_START")
 AI_QUIET_HOURS_END = _env_optional_int("AI_QUIET_HOURS_END")
 AI_ENABLED = bool(AI_API_KEY and AI_API_URL and AI_MODEL)
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+        "sim",
+    }
+
+
+CAKTO_WEBHOOK_SECRET = os.getenv("CAKTO_WEBHOOK_SECRET", "").strip()
+
+CAKTO_REQUIRE_WEBHOOK_SECRET = env_bool(
+    "CAKTO_REQUIRE_WEBHOOK_SECRET",
+    bool(CAKTO_WEBHOOK_SECRET),
+)
