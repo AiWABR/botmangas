@@ -658,28 +658,28 @@
 
     <section class="section" id="featuredSection">
       <div class="section-head">
-        <div class="section-label"><div class="section-accent"></div><div><div class="section-title">Top 10 mangás</div><div class="section-count" id="featuredCount">Carregando...</div></div></div>
+        <div class="section-label"><div class="section-accent"></div><div><div class="section-title" id="featuredTitle">Destaques</div><div class="section-count" id="featuredCount">Carregando...</div></div></div>
       </div>
       <div id="featuredGrid"></div>
     </section>
 
     <section class="section" id="popularSection">
       <div class="section-head">
-        <div class="section-label"><div class="section-accent"></div><div><div class="section-title">Top 10 manhwa</div><div class="section-count" id="popularCount">Carregando...</div></div></div>
+        <div class="section-label"><div class="section-accent"></div><div><div class="section-title" id="popularTitle">Populares</div><div class="section-count" id="popularCount">Carregando...</div></div></div>
       </div>
       <div id="popularGrid"></div>
     </section>
 
     <section class="section" id="recentTitlesSection">
       <div class="section-head">
-        <div class="section-label"><div class="section-accent"></div><div><div class="section-title">Top 10 manhua</div><div class="section-count">Últimas obras adicionadas</div></div></div>
+        <div class="section-label"><div class="section-accent"></div><div><div class="section-title" id="recentTitlesTitle">Títulos recentes</div><div class="section-count" id="recentTitlesCount">Últimas obras adicionadas</div></div></div>
       </div>
       <div id="recentTitlesGrid"></div>
     </section>
 
     <section class="section" id="latestSection">
       <div class="section-head">
-        <div class="section-label"><div class="section-accent"></div><div><div class="section-title">Atualizados recentemente</div><div class="section-count">Mangás com atividade recente</div></div></div>
+        <div class="section-label"><div class="section-accent"></div><div><div class="section-title" id="latestTitle">Atualizados recentemente</div><div class="section-count" id="latestCount">Mangás com atividade recente</div></div></div>
       </div>
       <div id="latestGrid"></div>
     </section>
@@ -830,6 +830,38 @@ function firstGenre(item = {}, fallback = "Mangá") {
 }
 function compactTitle(value = "") {
   return String(value || "Mangá").replace(/\s+/g, " ").trim();
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value && Array.isArray(value.items)) return value.items;
+  if (value && Array.isArray(value.results)) return value.results;
+  if (value && Array.isArray(value.data)) return value.data;
+  return [];
+}
+function pickList(source = {}, keys = []) {
+  for (const key of keys) {
+    const list = asArray(source?.[key]);
+    if (list.length) return list;
+  }
+  return [];
+}
+function itemId(item = {}) {
+  return item.title_id || item.manga_id || item.id || item.slug || "";
+}
+function itemTitle(item = {}) {
+  return compactTitle(item.display_title || item.title || item.name || item.title_name || item.manga_title || "");
+}
+function validCatalogItem(item = {}) {
+  return Boolean(item && (itemId(item) || itemTitle(item)));
+}
+function setSectionCopy(sectionId, title, countText = "") {
+  const section = $$(sectionId);
+  if (!section) return;
+  const titleEl = section.querySelector(".section-title");
+  const countEl = section.querySelector(".section-count");
+  if (titleEl && title) titleEl.textContent = title;
+  if (countEl) countEl.textContent = countText || "";
 }
 
 document.addEventListener("error", (event) => {
@@ -1291,8 +1323,8 @@ function handleFavClick(titleId, meta = {}, btnEl = null) {
 //  CARD RENDER
 // ══════════════════════════════════════════
 function buildCard(item, { showReadBar = false } = {}) {
-  const titleId = item.title_id || item.id || "";
-  const title = compactTitle(item.display_title || item.title || "Mangá");
+  const titleId = itemId(item);
+  const title = itemTitle(item) || "Mangá";
   const cover = coverImage(item);
   const badge = item.is_adult ? "18+" : (item.latest_chapter ? `Cap. ${item.latest_chapter}` : "");
   const score = item.anilist_score || item.rating || "";
@@ -1316,7 +1348,7 @@ function buildCard(item, { showReadBar = false } = {}) {
       ${!cover ? `<div class="rank-fallback-title">${esc(title)}</div>` : ""}
       <div class="card-grad"></div>
       ${badge ? `<div class="card-badge ${item.is_adult ? "adult" : ""}">${esc(badge)}</div>` : ""}
-      <button class="card-fav-btn ${faved ? "faved" : ""}" data-fav-id="${esc(titleId)}" title="Favoritar">${faved ? "❤️" : "＋"}</button>
+      ${titleId ? `<button class="card-fav-btn ${faved ? "faved" : ""}" data-fav-id="${esc(titleId)}" title="Favoritar">${faved ? "❤️" : "＋"}</button>` : ""}
       ${showReadBar && readPct > 0 ? `<div class="card-read-bar"><div class="card-read-fill" style="width:${readPct}%"></div></div>` : ""}
     </div>
     <div class="card-body">
@@ -1325,7 +1357,8 @@ function buildCard(item, { showReadBar = false } = {}) {
     </div>
   `;
 
-  card.querySelector(".card-fav-btn").addEventListener("click", (e) => {
+  const favBtn = card.querySelector(".card-fav-btn");
+  if (favBtn && titleId) favBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     handleFavClick(titleId, {
       title: title, display_title: title, cover_url: cover,
@@ -1334,24 +1367,25 @@ function buildCard(item, { showReadBar = false } = {}) {
       status: item.status, anilist_score: item.anilist_score || item.rating,
     }, e.currentTarget);
   });
-  card.addEventListener("click", () => openTitle(titleId));
+  if (titleId) card.addEventListener("click", () => openTitle(titleId));
   return card;
 }
 
 function renderGrid(targetId, items = [], { emptyText = "Nenhum item encontrado.", showReadBar = false } = {}) {
   const target = $$(targetId);
   if (!target) return;
-  if (!items.length) { target.innerHTML = emptyState(emptyText); return; }
+  const clean = asArray(items).filter(validCatalogItem);
+  if (!clean.length) { target.innerHTML = emptyState(emptyText); return; }
   const grid = document.createElement("div");
   grid.className = "card-grid";
-  items.forEach(item => grid.appendChild(buildCard(item, { showReadBar })));
+  clean.forEach(item => grid.appendChild(buildCard(item, { showReadBar })));
   target.innerHTML = "";
   target.appendChild(grid);
 }
 
 function buildRankCard(item, index = 0) {
-  const titleId = item.title_id || item.id || "";
-  const title = compactTitle(item.display_title || item.title || "Mangá");
+  const titleId = itemId(item);
+  const title = itemTitle(item) || "Mangá";
   const cover = coverImage(item);
   const card = document.createElement("article");
   card.className = "rank-card";
@@ -1364,14 +1398,14 @@ function buildRankCard(item, index = 0) {
     </div>
     <div class="rank-meta">${esc(firstGenre(item))}</div>
   `;
-  card.addEventListener("click", () => openTitle(titleId));
+  if (titleId) card.addEventListener("click", () => openTitle(titleId));
   return card;
 }
 
 function buildEditorialCard(item, kicker = "Destaque") {
-  const titleId = item.title_id || item.id || "";
+  const titleId = itemId(item);
   const chapterId = item.chapter_id || item.latest_chapter_id || "";
-  const title = compactTitle(item.display_title || item.title || "Mangá");
+  const title = itemTitle(item) || "Mangá";
   const img = heroImage(item) || coverImage(item);
   const sub = item.description || item.synopsis || item.status || (item.chapter_number ? `Capítulo ${item.chapter_number}` : firstGenre(item));
   const card = document.createElement("article");
@@ -1384,15 +1418,21 @@ function buildEditorialCard(item, kicker = "Destaque") {
       <div class="editorial-sub">${esc(stripHtml(sub))}</div>
     </div>
   `;
-  card.addEventListener("click", () => chapterId ? openChapter(chapterId) : openTitle(titleId));
+  if (chapterId || titleId) card.addEventListener("click", () => chapterId ? openChapter(chapterId) : openTitle(titleId));
   return card;
 }
 
-function renderRail(targetId, items = [], { emptyText = "Nenhum item encontrado.", variant = "rank", kicker = "Destaque", limit = 12 } = {}) {
+function renderRail(targetId, items = [], { emptyText = "Nenhum item encontrado.", variant = "rank", kicker = "Destaque", limit = 12, hideWhenEmpty = true } = {}) {
   const target = $$(targetId);
-  if (!target) return;
-  const clean = (items || []).filter(Boolean).slice(0, limit);
-  if (!clean.length) { target.innerHTML = emptyState(emptyText); return; }
+  if (!target) return [];
+  const section = target.closest(".section, .continue-section");
+  const clean = asArray(items).filter(validCatalogItem).slice(0, limit);
+  if (!clean.length) {
+    target.innerHTML = hideWhenEmpty ? "" : emptyState(emptyText);
+    if (section && hideWhenEmpty) section.classList.add("hidden");
+    return [];
+  }
+  if (section) section.classList.remove("hidden");
   const rail = document.createElement("div");
   rail.className = "rail-scroll";
   clean.forEach((item, index) => {
@@ -1400,6 +1440,7 @@ function renderRail(targetId, items = [], { emptyText = "Nenhum item encontrado.
   });
   target.innerHTML = "";
   target.appendChild(rail);
+  return clean;
 }
 
 // ══════════════════════════════════════════
@@ -1645,9 +1686,9 @@ function openProfilePage() {
       <span class="profile-row-label">Armazenamento</span>
       <span class="profile-row-value">Local</span>
     </div>
-    <div style="padding-top:14px">
+    ${window.MB_ENABLE_AFFILIATE ? `<div style="padding-top:14px">
       <button class="btn btn-primary" id="affiliateGatewayBtn" style="width:100%">Painel de afiliados</button>
-    </div>
+    </div>` : ""}
   `;
 
   const affiliateBtn = $$("affiliateGatewayBtn");
@@ -1729,8 +1770,14 @@ function renderHeroSlide(nextIndex = 0) {
     bgEl.classList.remove("is-changing");
   }, 110);
 
-  $$("heroPrimaryBtn").onclick = () => hero.title_id ? openTitle(hero.title_id) : jumpTo("featuredSection");
-  $$("heroSecondaryBtn").onclick = () => jumpTo("recentChaptersSection");
+  const primaryBtn = $$("heroPrimaryBtn");
+  const heroTitleId = itemId(hero);
+  if (primaryBtn) {
+    primaryBtn.classList.toggle("hidden", !heroTitleId);
+    primaryBtn.onclick = heroTitleId ? () => openTitle(heroTitleId) : null;
+  }
+  const secondaryBtn = $$("heroSecondaryBtn");
+  if (secondaryBtn && !secondaryBtn.classList.contains("hidden")) secondaryBtn.onclick = () => jumpTo("recentChaptersSection");
 
   if (dotsEl) {
     dotsEl.innerHTML = items.slice(0, 6).map((_, i) => `<span class="hero-dot ${i === nextIndex ? "active" : ""}"></span>`).join("");
@@ -1745,13 +1792,19 @@ function moveHero(delta = 1) {
 }
 
 function startHeroCarousel(items = []) {
-  const usable = (items || []).filter(Boolean).slice(0, 6);
-  heroState.items = usable.length ? usable : [{ title: "Mangás em destaque", display_title: "Mangás em destaque" }];
+  const usable = asArray(items).filter(validCatalogItem).slice(0, 6);
+  const banner = $$("heroBanner");
   clearInterval(heroState.timer);
+  if (!usable.length) {
+    heroState.items = [];
+    if (banner) banner.classList.add("hidden");
+    return;
+  }
+  if (banner) banner.classList.remove("hidden");
+  heroState.items = usable;
   renderHeroSlide(0);
   if (heroState.items.length > 1) heroState.timer = setInterval(() => moveHero(1), 5200);
 
-  const banner = $$("heroBanner");
   if (banner && !heroState.bound) {
     heroState.bound = true;
     banner.addEventListener("touchstart", e => { heroState.startX = e.changedTouches?.[0]?.clientX || 0; }, { passive: true });
@@ -1763,23 +1816,53 @@ function startHeroCarousel(items = []) {
   }
 }
 
-function renderHome(data) {
-  const featured = data?.featured || [];
-  const popular = data?.popular || [];
-  const recentTitles = data?.recent_titles || [];
-  const latestUpdated = data?.latest_updated || data?.latest_titles || [];
-  const recentChapters = data?.recent_chapters || [];
+function renderHome(data = {}) {
+  // Usa só o que a API realmente entregar. Não inventa Top 10 de manhwa/manhua
+  // usando listas genéricas, porque isso cria seção falsa e botão puxando dado inexistente.
+  const featured = pickList(data, ["featured", "destaques", "highlights"]);
+  const popular = pickList(data, ["popular", "populares", "most_read", "mais_lidos"]);
+  const recentTitles = pickList(data, ["recent_titles", "latest_titles", "titles", "new_titles"]);
+  const latestUpdated = pickList(data, ["latest_updated", "updated", "recently_updated"]);
+  const recentChapters = pickList(data, ["recent_chapters", "latest_chapters", "chapters"]);
 
-  startHeroCarousel(featured.length ? featured : [...popular, ...recentTitles, ...latestUpdated]);
+  const topMangas = pickList(data, ["top_mangas", "top_manga", "ranking_mangas", "manga_top10"]);
+  const topManhwa = pickList(data, ["top_manhwa", "top_manhwas", "ranking_manhwa", "manhwa_top10"]);
+  const topManhua = pickList(data, ["top_manhua", "top_manhuas", "ranking_manhua", "manhua_top10"]);
 
-  renderRail("featuredGrid", featured, { emptyText: "Sem destaques agora.", variant: "rank", limit: 10 });
-  renderRail("popularGrid", popular, { emptyText: "Sem populares agora.", variant: "rank", limit: 10 });
-  renderRail("recentTitlesGrid", recentTitles, { emptyText: "Sem títulos recentes agora.", variant: "rank", limit: 10 });
-  renderRail("latestGrid", latestUpdated, { emptyText: "Sem atualizações agora.", variant: "editorial", kicker: "Atualizado", limit: 12 });
-  renderRail("recentChaptersGrid", recentChapters, { emptyText: "Sem capítulos recentes agora.", variant: "editorial", kicker: "Capítulo novo", limit: 12 });
+  const heroItems = [
+    ...asArray(data.hero),
+    ...asArray(data.banners),
+    ...(topMangas.length ? topMangas : featured),
+    ...popular,
+    ...recentTitles,
+    ...latestUpdated,
+  ].filter(validCatalogItem);
 
-  $$("featuredCount").textContent = `${featured.length} itens`;
-  $$("popularCount").textContent = `${popular.length} itens`;
+  startHeroCarousel(heroItems);
+
+  const firstRail = topMangas.length ? topMangas : featured;
+  setSectionCopy("featuredSection", topMangas.length ? "Top 10 mangás" : "Destaques", `${firstRail.length} item(ns)`);
+  renderRail("featuredGrid", firstRail, { variant: "rank", limit: 10 });
+
+  const secondRail = topManhwa.length ? topManhwa : popular;
+  setSectionCopy("popularSection", topManhwa.length ? "Top 10 manhwa" : "Populares", `${secondRail.length} item(ns)`);
+  renderRail("popularGrid", secondRail, { variant: "rank", limit: 10 });
+
+  const thirdRail = topManhua.length ? topManhua : recentTitles;
+  setSectionCopy("recentTitlesSection", topManhua.length ? "Top 10 manhua" : "Títulos recentes", `${thirdRail.length} item(ns)`);
+  renderRail("recentTitlesGrid", thirdRail, { variant: "rank", limit: 10 });
+
+  setSectionCopy("latestSection", "Atualizados recentemente", `${latestUpdated.length} item(ns)`);
+  renderRail("latestGrid", latestUpdated, { variant: "editorial", kicker: "Atualizado", limit: 12 });
+
+  setSectionCopy("recentChaptersSection", "Novidades", `${recentChapters.length} capítulo(s)`);
+  renderRail("recentChaptersGrid", recentChapters, { variant: "editorial", kicker: "Capítulo novo", limit: 12 });
+
+  const heroSecondary = $$("heroSecondaryBtn");
+  if (heroSecondary) {
+    heroSecondary.classList.toggle("hidden", !recentChapters.length);
+    heroSecondary.onclick = recentChapters.length ? () => jumpTo("recentChaptersSection") : null;
+  }
 
   renderContinueSection();
   updateNavBadge();
