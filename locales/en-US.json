@@ -5,7 +5,7 @@
     "support": "🛟 Support",
     "open_library": "📚 Open library",
     "search": "🔎 Search manga",
-    "language": "🌐 Change language",
+    "language": "🌍 Language",
     "plans": "💎 View plans",
     "referrals": "🎁 My referrals",
     "processing": "⏳ Processing. Please wait a moment.",
@@ -13,7 +13,7 @@
     "generic_error": "⚠️ I could not process that right now. Please try again in a few seconds."
   },
   "language": {
-    "title": "🌐 <b>Bot language</b>",
+    "title": "🌍 <b>Bot language</b>",
     "body": "Choose the language for bot messages, buttons and alerts.",
     "current": "Current language: <b>{locale}</b>",
     "saved": "✅ Language changed to <b>{locale}</b>.",
@@ -22,7 +22,7 @@
     "es": "🇪🇸 Español"
   },
   "start": {
-    "welcome": "🎬 <b>Welcome to {brand}, {name}!</b>\n\nFind manga, manhwa and manhua right inside Telegram, with fast reading, history, favorites and offline mode.\n\n<blockquote>🔎 Search by title\n📖 Open chapters in a few taps\n⭐ Save favorites and continue later</blockquote>\n\n<i>Type a title or use /buscar.</i>",
+    "welcome": "🎬 <b>Welcome to {brand}, {name}!</b>\n\nFind manga, manhwa and manhua right inside Telegram, with fast reading, history, favorites and offline mode.\n\n<blockquote>• 🔎 Search by title\n• 📖 Open chapters in a few taps\n• ⭐ Save favorites and continue later</blockquote>\n\n<i>Type a title or use /buscar.</i>",
     "loading_title": "⏳ <b>Opening title...</b>\n\nLoading details and chapters.",
     "loading_chapter": "⏳ <b>Opening chapter...</b>\n\nPreparing the reader.",
     "timeout": "⚠️ This request took too long. Please try again in a few seconds.",
