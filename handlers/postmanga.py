@@ -792,7 +792,7 @@ def _advanced_pt_br_filter_payload(page: int) -> dict:
         "filters[sort]": "updated_chapters_desc",
         "filters[page]": str(max(1, int(page))),
         "filters[tag_included_ids]": "",
-        "filters[tag_included_mode]": "or",
+        "filters[tag_included_mode]": "and",
         "filters[tag_excluded_ids]": "",
         "filters[tag_excluded_mode]": "and",
         "filters[contentRating]": "any",
