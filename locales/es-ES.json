@@ -4,8 +4,8 @@
     "try_again": "🔄 Intentar otra vez",
     "support": "🛟 Soporte",
     "open_library": "📚 Abrir biblioteca",
-    "search": "🔎 Buscar manga",
-    "language": "🌐 Cambiar idioma",
+    "search": "🔎 Buscar mangás",
+    "language": "🌍 Idioma",
     "plans": "💎 Ver planes",
     "referrals": "🎁 Mis referidos",
     "processing": "⏳ Estoy procesando. Espera un momento.",
@@ -13,7 +13,7 @@
     "generic_error": "⚠️ No pude procesar eso ahora. Inténtalo de nuevo en unos segundos."
   },
   "language": {
-    "title": "🌐 <b>Idioma del bot</b>",
+    "title": "🌍 <b>Idioma del bot</b>",
     "body": "Elige el idioma para mensajes, botones y avisos del bot.",
     "current": "Idioma actual: <b>{locale}</b>",
     "saved": "✅ Idioma cambiado a <b>{locale}</b>.",
@@ -22,7 +22,7 @@
     "es": "🇪🇸 Español"
   },
   "start": {
-    "welcome": "🎬 <b>Bienvenido a {brand}, {name}!</b>\n\nEncuentra manga, manhwa y manhua dentro de Telegram, con lectura rápida, historial, favoritos y modo offline.\n\n<blockquote>🔎 Busca por nombre\n📖 Abre capítulos en pocos toques\n⭐ Guarda favoritos y continúa después</blockquote>\n\n<i>Escribe el nombre de una obra o usa /buscar.</i>",
+    "welcome": "🎬 <b>Bienvenido a {brand}, {name}!</b>\n\nEncuentra manga, manhwa y manhua dentro de Telegram, con lectura rápida, historial, favoritos y modo offline.\n\n<blockquote>• 🔎 Busca por nombre\n• 📖 Abre capítulos en pocos toques\n• ⭐ Guarda favoritos y continúa después</blockquote>\n\n<i>Escribe el nombre de una obra o usa /buscar.</i>",
     "loading_title": "⏳ <b>Abriendo obra...</b>\n\nCargando detalles y capítulos.",
     "loading_chapter": "⏳ <b>Abriendo capítulo...</b>\n\nPreparando la lectura.",
     "timeout": "⚠️ Esta solicitud tardó demasiado. Inténtalo otra vez en unos segundos.",
