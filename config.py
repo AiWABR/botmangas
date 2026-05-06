@@ -157,10 +157,6 @@ PDF_BULK_MAX_CHAPTERS = _env_int("PDF_BULK_MAX_CHAPTERS", 0)
 PDF_BULK_DELAY_SECONDS = _env_float("PDF_BULK_DELAY_SECONDS", 0.2)
 PDF_BULK_SUBSCRIBE_URL = os.getenv("PDF_BULK_SUBSCRIBE_URL", REQUIRED_CHANNEL_URL).strip()
 CAKTO_WEBHOOK_SECRET = os.getenv("CAKTO_WEBHOOK_SECRET", "").strip()
-CAKTO_REQUIRE_WEBHOOK_SECRET = os.getenv(
-    "CAKTO_REQUIRE_WEBHOOK_SECRET",
-    "true" if CAKTO_WEBHOOK_SECRET else "false"
-).strip().lower() in ("1", "true", "yes", "on", "sim")
 CAKTO_NOTIFY_USERS = _env_bool("CAKTO_NOTIFY_USERS", True)
 CAKTO_CLIENT_ID = os.getenv("CAKTO_CLIENT_ID", "").strip()
 CAKTO_CLIENT_SECRET = os.getenv("CAKTO_CLIENT_SECRET", "").strip()
@@ -215,4 +211,3 @@ AI_TIMEZONE = os.getenv("AI_TIMEZONE", "America/Cuiaba").strip()
 AI_QUIET_HOURS_START = _env_optional_int("AI_QUIET_HOURS_START")
 AI_QUIET_HOURS_END = _env_optional_int("AI_QUIET_HOURS_END")
 AI_ENABLED = bool(AI_API_KEY and AI_API_URL and AI_MODEL)
-
