@@ -469,6 +469,14 @@ def _merge_search_result_sets(*result_sets: list[dict[str, Any]], limit: int) ->
     return merged
 
 
+def _is_auth_block_error(error: Exception | None) -> bool:
+    if error is None:
+        return False
+    if isinstance(error, httpx.HTTPStatusError) and error.response is not None:
+        return error.response.status_code in (401, 403)
+    return "401" in repr(error) or "403" in repr(error)
+
+
 def _extract_title_id(value: Any) -> str:
     text = _clean(value)
     match = re.search(r"title-detail/(?:[^/]*-)?([a-f0-9]{20,32})", text, flags=re.IGNORECASE)
@@ -625,6 +633,8 @@ def _remember_title_summary(item: dict[str, Any]) -> None:
         "anilist_status",
         "anilist_score",
         "latest_chapter",
+        "languages",
+        "total_translations",
         "chapter_id",
         "chapter_url",
         "language",
@@ -1483,6 +1493,7 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
         quick_results: list[dict[str, Any]] = []
         rich_results: list[dict[str, Any]] = []
         quick_error: Exception | None = None
+        rich_error: Exception | None = None
 
         try:
             quick_response = await asyncio.wait_for(
@@ -1500,20 +1511,26 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
         should_try_rich = (
             len(quick_results) < min(max(SEARCH_MIN_REMOTE_RESULTS, 1), max(1, int(limit)))
             or bool(fallback_results)
+            or _is_auth_block_error(quick_error)
         )
 
         if should_try_rich:
             try:
+                rich_timeout = SEARCH_REMOTE_TIMEOUT if _is_auth_block_error(quick_error) else min(
+                    SEARCH_REMOTE_TIMEOUT,
+                    SEARCH_RICH_TIMEOUT,
+                )
                 rich_response = await asyncio.wait_for(
                     _request_form_json("/api/v1/smart-search/search/", payload),
-                    timeout=min(SEARCH_REMOTE_TIMEOUT, SEARCH_RICH_TIMEOUT),
+                    timeout=rich_timeout,
                 )
                 if rich_response.get("code") == 200:
                     rich_results = _normalize_search_response_items(
                         (rich_response.get("data") or {}).get("manga") or [],
                         normalized_query,
                     )
-            except Exception:
+            except Exception as error:
+                rich_error = error
                 schedule_warm_catalog_cache()
 
         merged = _merge_search_result_sets(quick_results, rich_results, fallback_results, limit=limit)
@@ -1521,8 +1538,10 @@ async def search_titles(query: str, limit: int = SEARCH_LIMIT) -> list[dict[str,
             return merged, not bool(quick_results or rich_results)
         if fallback_results:
             return fallback_results, True
-        if quick_error is not None:
+        if quick_error is not None and not _is_auth_block_error(quick_error):
             raise quick_error
+        if rich_error is not None and not _is_auth_block_error(rich_error):
+            raise rich_error
         return [], False
 
     async def _runner():
@@ -1617,6 +1636,16 @@ def _chapter_list_cache_key(title_id: str) -> str:
     return f"chapter-list:{title_id}:all"
 
 
+def get_cached_chapter_list(title_id: str, lang: str | None = None) -> dict[str, Any] | None:
+    title_id = _extract_title_id(title_id) or _clean(title_id)
+    if not title_id:
+        return None
+    cached = _cache_get(_chapter_list_cache_key(title_id), CHAPTERS_TTL)
+    if isinstance(cached, dict) and not cached.get("partial"):
+        return _chapter_payload_with_preferred_language(cached, lang)
+    return None
+
+
 def _chapter_payload_with_preferred_language(chapter_payload: dict[str, Any], preferred_lang: str | None) -> dict[str, Any]:
     preferred_lang = _clean(preferred_lang).lower() or PREFERRED_CHAPTER_LANG
     chapters: list[dict[str, Any]] = []
@@ -1684,11 +1713,21 @@ async def get_chapter_list(title_id: str, lang: str | None = None) -> dict[str, 
             return {"title_id": title_id, "chapters": [], "languages": [], "total_translations": 0, "partial": True}
 
         chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        languages = response.get("ALL_LANGUAGES") or []
+        total_translations = int(response.get("TOTAL_TRANSLATIONS") or 0)
+        _remember_title_summary(
+            {
+                "title_id": title_id,
+                "languages": languages,
+                "total_translations": total_translations,
+                "total_chapters": len(chapters),
+            }
+        )
         return {
             "title_id": title_id,
             "chapters": chapters,
-            "languages": response.get("ALL_LANGUAGES") or [],
-            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+            "languages": languages,
+            "total_translations": total_translations,
         }
 
     try:
@@ -1755,11 +1794,21 @@ async def get_chapter_list_fast(title_id: str, lang: str | None = None) -> dict[
             }
 
         chapters = _normalize_chapter_groups(response.get("ALL_CHAPTERS") or [], lang or PREFERRED_CHAPTER_LANG)
+        languages = response.get("ALL_LANGUAGES") or []
+        total_translations = int(response.get("TOTAL_TRANSLATIONS") or 0)
+        _remember_title_summary(
+            {
+                "title_id": title_id,
+                "languages": languages,
+                "total_translations": total_translations,
+                "total_chapters": len(chapters),
+            }
+        )
         return {
             "title_id": title_id,
             "chapters": chapters,
-            "languages": response.get("ALL_LANGUAGES") or [],
-            "total_translations": int(response.get("TOTAL_TRANSLATIONS") or 0),
+            "languages": languages,
+            "total_translations": total_translations,
         }
 
     result = await _dedup_fetch(cache_key, min(CHAPTERS_TTL, 300), _load)
